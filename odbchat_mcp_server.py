@@ -23,6 +23,12 @@ ollama_client = OllamaAsyncClient(host=OLLAMA_URL)
 # Create MCP server
 mcp = FastMCP("odb-chat-server")
 
+# Suggested model candidates (not guaranteed installed)
+SUGGESTED_MODELS = [
+    "gemma3:4b",
+    "gpt-oss:20b",
+]
+
 @mcp.tool()
 async def chat_with_odb(
     query: str,
@@ -82,29 +88,57 @@ Provide accurate, helpful responses based on your knowledge of these domains."""
 @mcp.tool()
 async def list_available_models() -> List[str]:
     """
-    List all available Ollama models on the system.
+    Return unique model names (installed + suggested). Avoids verbose reprs.
     """
     try:
         models_response = await ollama_client.list()
         logger.debug(f"Ollama list response: {models_response}")
-        
-        # Be safe: model might not have 'name'
-        model_names = []
-        for model in models_response.get('models', []):
-            if isinstance(model, dict) and "name" in model:
-                model_names.append(model["name"])
-            elif isinstance(model, dict):
-                model_names.append(str(model))
-            elif isinstance(model, str):
-                model_names.append(model)
+        names: List[str] = []
+        for item in models_response.get('models', []):
+            name = None
+            if isinstance(item, dict):
+                name = item.get('name') or item.get('model')
+            elif isinstance(item, str):
+                name = item
             else:
-                model_names.append(str(model))
-        
-        return model_names
-    
+                name = getattr(item, 'name', None) or getattr(item, 'model', None)
+            if name:
+                names.append(name)
+        merged = sorted({*names, *SUGGESTED_MODELS})
+        return merged
     except Exception as e:
         logger.error(f"Error listing models: {e}")
         return [f"Error: {str(e)}"]
+
+@mcp.tool()
+async def get_model_info(model: str) -> Dict[str, Any]:
+    """Return details for a specific model name."""
+    try:
+        models_response = await ollama_client.list()
+        for item in models_response.get('models', []):
+            if isinstance(item, dict):
+                name = item.get('name') or item.get('model')
+                if name == model:
+                    data = dict(item)
+                    data['installed'] = True
+                    return data
+            else:
+                name = None
+                if isinstance(item, str):
+                    name = item
+                else:
+                    name = getattr(item, 'name', None) or getattr(item, 'model', None)
+                if name == model:
+                    return {'name': name, 'installed': True}
+        return {
+            'name': model,
+            'installed': False,
+            'suggested': model in SUGGESTED_MODELS,
+            'message': "Model not installed. Use 'ollama pull <model>' if available."
+        }
+    except Exception as e:
+        logger.error(f"Error getting model info: {e}")
+        return {'error': str(e), 'name': model}
 
 @mcp.tool()
 async def check_ollama_status() -> Dict[str, Any]:
@@ -171,8 +205,8 @@ async def odb_knowledge_base() -> str:
 # For standalone MCP server (HTTP mode)
 def main():
     """Run the MCP server in HTTP mode for mcp-use compatibility"""
-    # Use FastMCP's built-in HTTP server capability
-    mcp.run(transport="sse", host="127.0.0.1", port=8045, path="/mcp")
+    # Use FastMCP's HTTP transport so clients can POST/HTTP
+    mcp.run(transport="http", host="127.0.0.1", port=8045, path="/mcp")
 
 if __name__ == "__main__":
     main()
