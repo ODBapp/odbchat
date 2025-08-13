@@ -3,14 +3,13 @@
 MCP Server for ODB Chat with Ollama integration
 This creates a proper MCP server that can be used with mcp-use or other MCP clients
 """
-
 import asyncio
 import json
 import sys
+import logging
 from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 from ollama import AsyncClient as OllamaAsyncClient
-import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +21,10 @@ ollama_client = OllamaAsyncClient(host=OLLAMA_URL)
 
 # Create MCP server
 mcp = FastMCP("odb-chat-server")
+
+# mcp function plugins
+from api.mhw_mcp import register_mhw_tools
+register_mhw_tools(mcp)
 
 # Suggested model candidates (not guaranteed installed)
 SUGGESTED_MODELS = [

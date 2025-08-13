@@ -1,7 +1,8 @@
 {
   "mcpServers": {
-    "odb": {
-      "url": "http://127.0.0.1:8045/mcp"
-    }
+    "odb-chat": { "url": "http://127.0.0.1:8045/mcp" }
+  },
+  "providers": {
+    "ollama": { "baseUrl": "http://127.0.0.1:11434" }
   }
 }
