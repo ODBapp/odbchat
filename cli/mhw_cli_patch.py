@@ -1,6 +1,6 @@
 # cli/mhw_cli_patch.py
 from __future__ import annotations
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List, Callable, Tuple
 import json
 import sys
 import os
@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 import importlib
 import importlib.util
+from datetime import datetime, date
 
 MHW_API_JSON = "https://eco.odb.ntu.edu.tw/api/mhw"
 MHW_API_CSV  = "https://eco.odb.ntu.edu.tw/api/mhw/csv"
@@ -204,6 +205,114 @@ def _run_plot(df, args, fields):
     except Exception as e:
         print(f"[plot error] {e}", file=sys.stderr)
 
+# -----------------------------
+# Period parsing for API params
+# -----------------------------
+def _strip_quotes(s: str) -> str:
+    if not s:
+        return s
+    quotes = {'"', "'", '“', '”', '‘', '’'}
+    out = s.strip()
+    while len(out) >= 2 and out[0] in quotes and out[-1] in quotes:
+        out = out[1:-1].strip()
+    return out
+
+def _convert_to_day(date_str: str) -> str:
+    """
+    Convert various compact date strings to 'YYYY-MM-DD'.
+    Accepts: YYYY-MM-DD, YYYYMMDD, YYYY-MM, YYYYMM, YYYY.
+    Returns YYYY-MM-DD (first day for YYYY/YYYMM forms).
+    """
+    s = _strip_quotes((date_str or '').strip())
+    # Try precise formats first
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    # Month-only
+    for fmt in ("%Y-%m", "%Y%m"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%Y-%m-01")
+        except ValueError:
+            pass
+    # Year-only
+    if len(s) == 4 and s.isdigit():
+        try:
+            return datetime.strptime(s, "%Y").strftime("%Y-01-01")
+        except ValueError:
+            pass
+    raise ValueError(f"Invalid date format: {date_str}")
+
+def _period_to_bounds(period: str, default_start: str = '1982-01-01') -> Tuple[str, str]:
+    """
+    Convert 'start-end' period string into YYYY-MM-DD start/end.
+    start/end may be '', meaning default_start or latest full month start.
+    Supports start/end formats accepted by _convert_to_day.
+    """
+    raw = _strip_quotes((period or '').strip())
+    if '-' not in raw:
+        # Single token: treat as a single year/month/day; compute a 1-year or 1-month window? Use exact day → same day.
+        # For climatology, single token likely means a year. We'll map to full coverage:
+        s_norm = _convert_to_day(raw)
+        # Determine granularity by length
+        if len(raw) == 4:  # year
+            s = datetime.strptime(s_norm, "%Y-%m-%d")
+            e = datetime(s.year + 1, 1, 1)
+            e = (e.replace(day=1) - pd.DateOffset(days=1)).date()
+            return s_norm, date(e.year, e.month, e.day).strftime("%Y-%m-%d")
+        if len(raw) in (6, 7):  # YYYYMM or YYYY-MM as month
+            s = datetime.strptime(s_norm, "%Y-%m-%d")
+            # next month first day
+            if s.month == 12:
+                e = datetime(s.year + 1, 1, 1)
+            else:
+                e = datetime(s.year, s.month + 1, 1)
+            e = (e - pd.DateOffset(days=1)).date()
+            return s_norm, date(e.year, e.month, e.day).strftime("%Y-%m-%d")
+        # exact day
+        return s_norm, s_norm
+
+    start, end = raw.split('-', 1)
+    start = _strip_quotes(start.strip())
+    end = _strip_quotes(end.strip())
+    try:
+        if not start:
+            start = default_start
+        else:
+            start = _convert_to_day(start)
+
+        if not end:
+            # last full month first day
+            today = pd.Timestamp.today().to_pydatetime()
+            last_month_first = (today.replace(day=1) - pd.DateOffset(months=1)).date()
+            end = date(last_month_first.year, last_month_first.month, last_month_first.day).strftime("%Y-%m-%d")
+        else:
+            end = _convert_to_day(end)
+
+        return start, end
+    except ValueError as e:
+        raise ValueError(str(e))
+
+def _overall_bounds_from_periods(periods_csv: str) -> Tuple[str, str]:
+    """
+    Given a CSV of periods, return the min start and max end.
+    """
+    csv_clean = _strip_quotes((periods_csv or '').strip())
+    periods = [_strip_quotes(p.strip()) for p in csv_clean.split(',') if p.strip()]
+    starts: List[str] = []
+    ends: List[str] = []
+    for p in periods:
+        s, e = _period_to_bounds(p)
+        starts.append(s)
+        ends.append(e)
+    if not starts:
+        raise ValueError("No valid periods")
+    s_min = min(starts)
+    e_max = max(ends)
+    return s_min, e_max
+
 async def _cmd_mhw_line(cli, line: str) -> None:
     """
     Handle a single '/mhw ...' line using the connected CLI (sync wrapper).
@@ -212,25 +321,92 @@ async def _cmd_mhw_line(cli, line: str) -> None:
     tokens = line.strip().split()[1:]  # drop '/mhw'
     pargs = _build_args_from_tokens(tokens)
 
-    # 1) Try MCP mhw_query
-    res = await _call_mcp_tool("mhw_query", {k: v for k, v in pargs.items() if not k.startswith("_")})
+    # Prepare per-period bounds if provided
+    bounds_list: List[Tuple[str, str, str]] = []  # (label, start, end)
+    if pargs.get("_periods"):
+        try:
+            csv_clean = _strip_quotes(pargs.get("_periods", "").strip())
+            for token in [t for t in csv_clean.split(',') if t.strip()]:
+                tok = _strip_quotes(token.strip())
+                s, e = _period_to_bounds(tok)
+                bounds_list.append((tok, s, e))
+        except Exception as e:
+            print(f"[period parse warning] {e}", file=sys.stderr)
 
-    # 2) If MCP not available, HTTP fallback
-    if res is None:
-        params = {k: v for k, v in pargs.items() if k in {"lon0","lat0","lon1","lat1","start","end","append"}}
+    # 1) Try MCP mhw_query (excluding plotting-only args)
+    base_args = {k: v for k, v in pargs.items() if not k.startswith("_")}
+    res = None
+    if not bounds_list:
+        res = await _call_mcp_tool("mhw_query", base_args)
+
+    # 2) If MCP not available, or we need multi-period fetches, HTTP/MCP per-period fallback
+    if res is None or bounds_list:
+        params_base = {k: v for k, v in pargs.items() if k in {"lon0","lat0","lon1","lat1","append"}}
+        out_meta: List[Dict[str, Any]] = []
+        all_records: List[Dict[str, Any]] = []
+        # If no bounds_list, derive one from provided start/end or overall
+        if not bounds_list:
+            s = pargs.get("start")
+            e = pargs.get("end")
+            if not (s and e) and pargs.get("_periods"):
+                s, e = _overall_bounds_from_periods(pargs.get("_periods", ""))
+            if not (s and e):
+                # leave empty to trigger defaults server-side
+                pass
+            else:
+                bounds_list = [(f"{s}-{e}", s, e)]
+
         if pargs.get("output") == "csv":
-            out = _http_csv(params)
-            print(json.dumps(out, ensure_ascii=False, indent=2))
+            # Print a CSV URL per period
+            for label, s, e in bounds_list or [("", params_base.get("start"), params_base.get("end"))]:
+                p = dict(params_base)
+                if s: p["start"] = s
+                if e: p["end"] = e
+                out = _http_csv(p)
+                out_meta.append({"label": label, **{k: v for k, v in out.items()}})
+            print(json.dumps(out_meta, ensure_ascii=False, indent=2))
             return
+
+        # JSON fetches per period: try MCP per-period first if client available
+        if _CLI is not None and _CLI.client is not None:
+            for label, s, e in bounds_list:
+                args_i = dict(base_args)
+                if s: args_i["start"] = s
+                if e: args_i["end"] = e
+                args_i["return_raw"] = True
+                try:
+                    r = await _call_mcp_tool("mhw_query", args_i)
+                except Exception:
+                    r = None
+                if r and isinstance(r, dict) and "data" in r:
+                    all_records.extend(r.get("data") or [])
+                    # capture meta for printing
+                    out_meta.append({"endpoint": r.get("endpoint"), "params": r.get("params"), "label": label})
+                else:
+                    # fallback to HTTP for that period
+                    p = dict(params_base)
+                    if s: p["start"] = s
+                    if e: p["end"] = e
+                    http_res = _http_json(p)
+                    out_meta.append({k: v for k, v in http_res.items() if k != "data"} | {"label": label})
+                    all_records.extend(http_res.get("data") or [])
         else:
-            out = _http_json(params)
-            data = out["data"]
-            print(json.dumps({k: v for k, v in out.items() if k != "data"}, ensure_ascii=False, indent=2))
-            # Plot if requested (compute fields from append or default)
-            fields = (pargs.get("append") or "sst,sst_anomaly").split(",")
-            fields = [f.strip() for f in fields if f.strip()]
-            _run_plot(_records_to_df(data), pargs, fields)
-            return
+            # No MCP client: HTTP per period
+            for label, s, e in bounds_list:
+                p = dict(params_base)
+                if s: p["start"] = s
+                if e: p["end"] = e
+                http_res = _http_json(p)
+                out_meta.append({k: v for k, v in http_res.items() if k != "data"} | {"label": label})
+                all_records.extend(http_res.get("data") or [])
+
+        # Print simple meta summary
+        print(json.dumps(out_meta, ensure_ascii=False, indent=2))
+        # Plot if requested
+        fields = (pargs.get("append") or "sst,sst_anomaly").split(",")
+        fields = [f.strip() for f in fields if f.strip()]
+        _run_plot(_records_to_df(all_records), pargs, fields)
+        return
 
     # 3) MCP JSON result
     # Print non-data parts for readability

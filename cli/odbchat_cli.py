@@ -25,7 +25,15 @@ import asyncio
 import json
 import sys
 from typing import Optional, Dict, Any
+import os
+try:  # platform-dependent
+    import tty  # type: ignore
+    import termios  # type: ignore
+except Exception:  # pragma: no cover
+    tty = None  # type: ignore
+    termios = None  # type: ignore
 import argparse
+import select
 from fastmcp import Client
 
 try:
@@ -44,6 +52,8 @@ class ODBChatClient:
         self.current_model = default_model
         self.temperature = DEFAULT_TEMPERATURE
         self.client: Optional[Client] = None
+        # Session-only history for slash-commands (e.g., "/mhw ...")
+        self._cmd_history: list[str] = []
 
     # ----------------------
     # Connection management
@@ -242,14 +252,19 @@ class ODBChatClient:
 
         while True:
             try:
-                user_input = input(f"\n🧑 You ({self.current_model} @ {self.temperature}): ").strip()
+                user_input = self._readline_with_cmd_history(
+                    f"\n🧑 You ({self.current_model} @ {self.temperature}): "
+                ).strip()
                 if not user_input:
                     continue
                 if user_input.lower() in {"/quit", "/exit", "q", "quit", "exit"}:
-                    print("👋 Goodbye!")
+                    print("\n👋 Goodbye!")
                     break
 
                 if user_input.startswith('/'):
+                    # Keep session command history for slash-commands
+                    if not self._cmd_history or self._cmd_history[-1] != user_input:
+                        self._cmd_history.append(user_input)
                     await self._handle_command(user_input)
                     continue
 
@@ -268,6 +283,274 @@ class ODBChatClient:
                 break
             except Exception as e:  # pragma: no cover
                 print(f"\n❌ Error: {e}")
+
+    # ----------------------
+    # Minimal line editor with conditional Up/Down for slash-commands
+    # ----------------------
+    def _readline_with_cmd_history(self, prompt: str) -> str:
+        """
+        Read a line from TTY and support Up/Down navigation ONLY for slash-commands.
+        - Up/Down cycle through history iff the current buffer starts with '/'
+        - Left/Right/Home/End for in-line editing
+        - Bracketed paste supported
+        Also services matplotlib GUI while waiting for keystrokes.
+        Falls back to built-in input() if no TTY or on unsupported platforms.
+        """
+        try:
+            if (not sys.stdin.isatty() or not sys.stdout.isatty() or os.name == 'nt' or
+                tty is None or termios is None):
+                return input(prompt)
+
+            # Split prompt into prefix (incl. any newlines) and the final single-line prompt
+            nl_idx = prompt.rfind('\n')
+            if nl_idx >= 0:
+                prompt_prefix = prompt[: nl_idx + 1]
+                prompt_line = prompt[nl_idx + 1 :]
+            else:
+                prompt_prefix = ''
+                prompt_line = prompt
+
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+
+            # Optional: GUI tick (only if matplotlib is importable and figures exist)
+            def _gui_tick():
+                try:
+                    import matplotlib.pyplot as _plt  # local import to avoid hard dependency
+                    if _plt.get_fignums():
+                        _plt.pause(0.01)
+                except Exception:
+                    pass
+
+            # ---- display-width helper (handles emoji, CJK, combining marks) ----
+            import unicodedata
+            def _cols(s: str) -> int:
+                w = 0
+                for ch in s:
+                    if unicodedata.combining(ch):
+                        continue
+                    w += 2 if unicodedata.east_asian_width(ch) in ('W','F') else 1
+                return w
+
+            # Print prefix + prompt line once; save anchor *after* the prompt
+            if prompt_prefix:
+                sys.stdout.write(prompt_prefix)
+            sys.stdout.write(prompt_line)
+            sys.stdout.flush()
+            sys.stdout.write('\x1b[s')  # anchor just after prompt
+            sys.stdout.flush()
+
+            buf: list[str] = []
+            cursor = 0
+            hist_index: Optional[int] = None
+            saved_before_history: str = ""
+
+            def redraw():
+                import shutil
+                # terminal width and available input columns (display-width aware)
+                try:
+                    width = shutil.get_terminal_size().columns or 80
+                except Exception:
+                    width = 80
+                width = max(20, width)
+                avail = max(10, width - _cols(prompt_line) - 1)
+
+                text = ''.join(buf)
+                cur = max(0, cursor)
+                # choose a start index so that text[start:cur] fits within avail
+                start = 0
+                if _cols(text) > avail:
+                    # slide window so that cursor is kept in view
+                    start = 0
+                    while start < cur and _cols(text[start:cur]) > (avail - 1):
+                        start += 1
+
+                # build visible slice that fits in avail columns
+                vis_chars = []
+                used = 0
+                for ch in text[start:]:
+                    ch_w = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in ('W','F') else 1)
+                    if used + ch_w > avail:
+                        break
+                    vis_chars.append(ch)
+                    used += ch_w
+                visible = ''.join(vis_chars)
+
+                # columns from start→cursor inside the visible slice
+                cur_cols = _cols(text[start:cur])
+
+                # draw caret exactly at the insertion point (no visual fudge)
+                cur_cols = _cols(text[start:cur])
+                caret_cols = _cols(prompt_line) + min(cur_cols, _cols(visible))
+
+                # redraw single line at saved anchor
+                sys.stdout.write('\x1b[u')   # restore to anchor
+                sys.stdout.write('\x1b[?7l')    # disable line wrap
+                sys.stdout.write('\r')       # column 0
+                sys.stdout.write('\x1b[2K')  # clear line
+                sys.stdout.write(prompt_line)
+                sys.stdout.write(visible)
+
+                # place caret: "next edit position" (more intuitive)
+                sys.stdout.write('\x1b[u')
+                sys.stdout.write('\r')
+                if caret_cols > 0:
+                    sys.stdout.write(f'\x1b[{caret_cols}C')
+                sys.stdout.write('\x1b[?7h')    # re‑enable wrap
+                sys.stdout.flush()
+
+            def set_buffer(s: str):
+                nonlocal buf, cursor
+                buf = list(s)
+                cursor = len(buf)
+                redraw()
+
+            # raw mode + bracketed paste
+            tty.setraw(fd)
+            try:
+                sys.stdout.write("\x1b[?2004h")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+            try:
+                while True:
+                    # Non-blocking wait for keypress with short timeout; tick GUI while idle
+                    r, _, _ = select.select([fd], [], [], 0.05)
+                    if not r:
+                        _gui_tick()
+                        continue
+
+                    ch = sys.stdin.read(1)
+                    if ch == '\r' or ch == '\n':
+                        sys.stdout.write('\r\n')
+                        sys.stdout.flush()
+                        return ''.join(buf)
+                    if ch == '\x03':  # Ctrl-C
+                        raise KeyboardInterrupt
+                    # Ctrl-D when buffer empty (we also move to col 0)
+                    if ch == '\x04':  # Ctrl-D
+                        if not buf:
+                            sys.stdout.write('\r\n')
+                            sys.stdout.flush()
+                            return ''
+                        continue
+                    if ch in ('\x7f', '\b'):  # Backspace
+                        if cursor > 0:
+                            del buf[cursor-1]
+                            cursor -= 1
+                            hist_index = None
+                            redraw()
+                        continue
+                    if ch == '\x1b':  # CSI / ESC sequence
+                        seq1 = sys.stdin.read(1)
+                        if seq1 != '[':
+                            continue
+                        seq = ''
+                        while True:
+                            c = sys.stdin.read(1)
+                            seq += c
+                            if c.isalpha() or c in '~':
+                                break
+                        # Left / Right
+                        if seq == 'D':
+                            if cursor > 0:
+                                cursor -= 1
+                                redraw()
+                            continue
+                        if seq == 'C':
+                            if cursor < len(buf):
+                                cursor += 1
+                                redraw()
+                            continue
+                        # Up / Down (history iff buffer starts with '/')
+                        if seq in ('A', 'B'):
+                            current = ''.join(buf)
+                            if not current.startswith('/') or not self._cmd_history:
+                                continue
+                            if seq == 'A':
+                                if hist_index is None:
+                                    hist_index = len(self._cmd_history) - 1
+                                    saved_before_history = current
+                                elif hist_index > 0:
+                                    hist_index -= 1
+                                set_buffer(self._cmd_history[hist_index])
+                            else:
+                                if hist_index is None:
+                                    continue
+                                if hist_index < len(self._cmd_history) - 1:
+                                    hist_index += 1
+                                    set_buffer(self._cmd_history[hist_index])
+                                else:
+                                    hist_index = None
+                                    set_buffer(saved_before_history)
+                            continue
+                        # Home / End
+                        if seq == 'H':
+                            if cursor != 0:
+                                cursor = 0
+                                redraw()
+                            continue
+                        if seq == 'F':
+                            if cursor != len(buf):
+                                cursor = len(buf)
+                                redraw()
+                            continue
+                        # Delete key: 3~
+                        if seq == '3~':
+                            if cursor < len(buf):
+                                del buf[cursor]
+                                redraw()
+                            continue
+                        # Bracketed paste start 200~ ... end 201~
+                        if seq == '200~':
+                            paste_buf: list[str] = []
+                            while True:
+                                x = sys.stdin.read(1)
+                                if x == '\x1b':
+                                    y = sys.stdin.read(1)
+                                    if y != '[':
+                                        continue
+                                    seq2 = ''
+                                    while True:
+                                        z = sys.stdin.read(1)
+                                        seq2 += z
+                                        if z.isalpha() or z in '~':
+                                            break
+                                    if seq2 == '201~':
+                                        break
+                                    else:
+                                        continue
+                                else:
+                                    paste_buf.append(x)
+                            if paste_buf:
+                                buf[cursor:cursor] = paste_buf
+                                cursor += len(paste_buf)
+                                hist_index = None
+                                redraw()
+                            continue
+                        continue
+                    # printable
+                    if ' ' <= ch <= '~':
+                        buf[cursor:cursor] = [ch]
+                        cursor += 1
+                        hist_index = None
+                        redraw()
+                        continue
+                    # ignore others
+            finally:
+                try:
+                    sys.stdout.write("\x1b[?2004l")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        except EOFError:
+            return ''
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            return input(prompt)
 
     # ----------------------
     # Command parser
