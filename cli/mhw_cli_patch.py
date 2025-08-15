@@ -7,8 +7,9 @@ import importlib
 import importlib.util
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
-
 import pandas as pd
+from shared.schemas import canonicalize_fetch, validate_fetch, canonicalize_plot, validate_plot
+
 
 MHW_HELP = (
     "Query ODB MHW via MCP and (optionally) plot.\n"
@@ -299,6 +300,16 @@ async def handle_mhw(cli, line: str):
         print("[mhw] no arguments produced from flags", file=sys.stderr)
         return
 
+    normed = []
+    for a in arglist:
+        a1 = canonicalize_fetch(a)
+        ok, err = validate_fetch(a1)
+        if not ok:
+            print(f"❌ invalid request: {err}", file=sys.stderr)
+            return
+        normed.append(a1)
+    arglist = normed
+
     a0 = arglist[0]
     _warn_limits((a0["lon0"], a0["lat0"], a0.get("lon1"), a0.get("lat1")), a0["start"], a0.get("end") or a0["start"])
 
@@ -346,6 +357,25 @@ async def handle_mhw(cli, line: str):
         print(big.head().to_string(index=False)); return
 
     mode = (p.get("_plot") or "").lower()
+
+    plot_cfg = {"mode": mode}
+    if mode == "series":
+        fields = [f.strip() for f in (p.get("_plot_field") or arglist[0]["append"]).split(",")]
+        plot_cfg["fields"] = fields
+    elif mode == "month":
+        plot_cfg["field"] = (p.get("_plot_field") or "sst").strip()
+    elif mode == "map":
+        plot_cfg["field"] = (p.get("_plot_field") or "sst_anomaly").strip()
+        if p.get("_map_method"): plot_cfg["map_method"] = p["_map_method"]
+        if p.get("_cmap") is not None: plot_cfg["cmap"] = p["_cmap"]
+        if p.get("_vmin") is not None: plot_cfg["vmin"] = p["_vmin"]
+        if p.get("_vmax") is not None: plot_cfg["vmax"] = p["_vmax"]
+
+    plot_cfg = canonicalize_plot(plot_cfg)
+    ok, err = validate_plot(plot_cfg)
+    if not ok:
+        print(f"❌ invalid plot config: {err}", file=sys.stderr)
+        return    
 
     if mode == "series":
         fields = [f.strip() for f in (p.get("_plot_field") or arglist[0]["append"]).split(",") if f.strip() in ALLOWED_FIELDS]

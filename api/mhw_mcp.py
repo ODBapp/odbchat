@@ -4,6 +4,7 @@ import requests
 from fastmcp import FastMCP
 # from typing import Dict, Any, List
 from datetime import datetime
+from shared.schemas import canonicalize_fetch, validate_fetch
 
 MHW_API_JSON = "https://eco.odb.ntu.edu.tw/api/mhw"
 MHW_API_CSV  = "https://eco.odb.ntu.edu.tw/api/mhw/csv"
@@ -77,6 +78,16 @@ def register_mhw_tools(mcp: FastMCP) -> None:
         2) CSV: 回傳 download_url，不帶 data
            mhw_fetch(118,21,123,26,"2024-07-01","2025-06-01","sst,sst_anomaly","csv",False)
         """
+        
+        payload = canonicalize_fetch({
+            "lon0": lon0, "lat0": lat0, "lon1": lon1, "lat1": lat1,
+            "start": start, "end": end, "append": append,
+            "output": output, "include_data": include_data,
+        })
+        ok, err = validate_fetch(payload)
+        if not ok:
+            return {"error": f"invalid mhw_fetch args: {err}"}
+    
         fields_csv = _normalize_fields(append)
         fields = [f.strip() for f in fields_csv.split(",")]
 
@@ -117,3 +128,36 @@ def register_mhw_tools(mcp: FastMCP) -> None:
         if include_data:
             result["data"] = data
         return result
+
+        def mhw_fetch_batch(requests: list[dict]) -> dict:
+            """
+            Batch fetch MHW data.
+            requests: a list of mhw_fetch argument dicts (same schema as single-call).
+            Returns:
+                {
+                    "data": [ ... merged rows ... ],
+                    "components": [ {meta for each sub-call except 'data'} ... ]
+                }
+            """
+            
+            if not isinstance(requests, list) or not requests:
+                return {"error": "requests must be a non-empty list"}
+
+            merged = []
+            components = []
+            for r in requests:
+                r = canonicalize_fetch(r)
+                ok, err = validate_fetch(r)
+                if not ok:
+                    return {"error": f"invalid request: {err}"}
+
+                # Reuse your single-call tool’s core logic (factor it out if needed)
+                # Assuming you have an internal helper _mhw_fetch_impl(**r) that returns {"data": [...], ...}
+                res = _mhw_fetch_impl(**r)  # <-- use your code path that hits the ODB API
+                if isinstance(res, dict) and "data" in res:
+                    merged.extend(res["data"])
+                    components.append({k: v for k, v in res.items() if k != "data"})
+                else:
+                    return {"error": f"fetch failed for request: {r}"}
+
+            return {"data": merged, "components": components}
