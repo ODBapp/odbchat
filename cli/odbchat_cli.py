@@ -744,7 +744,13 @@ async def main():
 
     try:
         try:
-            from mhw_cli_patch import install_mhw_command
+            import sys
+            import os
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            print("You current at: ", project_root)                
+            from cli.mhw_cli_patch import install_mhw_command
             install_mhw_command(cli)
         except Exception:
             print("Warning: cannot load MHW CLI plugin")
