@@ -1,449 +1,390 @@
 # cli/mhw_cli_patch.py
 from __future__ import annotations
-from typing import Optional, Dict, Any, List, Callable, Tuple
 import json
 import sys
 import os
-import requests
-import pandas as pd
 import importlib
 import importlib.util
-from datetime import datetime, date
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple
 
-MHW_API_JSON = "https://eco.odb.ntu.edu.tw/api/mhw"
-MHW_API_CSV  = "https://eco.odb.ntu.edu.tw/api/mhw/csv"
+import pandas as pd
 
-# Will be set by install_mhw_command(cli)
-_CLI = None  # type: ignore
+MHW_HELP = (
+    "Query ODB MHW via MCP and (optionally) plot.\n"
+    "Usage:\n"
+    "  /mhw --bbox lon0,lat0[,lon1,lat1] [--start YYYY[-MM[-DD]]] [--end YYYY[-MM[-DD]]]\n"
+    "       [--fields sst,sst_anomaly,level,td] [--csv] [--raw]\n"
+    "       [--plot series|month|map] [--plot-field sst|sst_anomaly|level|td]\n"
+    "       [--periods \"YYYY,YYYYMM,YYYY-YYYY,YYYYMM-YYYYMM,...\"]\n"
+    "       [--map-method cartopy|basemap|plain] [--cmap NAME] [--vmin X] [--vmax Y]\n"
+    "       [--outfile path.png]\n"
+    "Cmaps: sst→turbo/viridis; sst_anomaly→RdYlBu_r/coolwarm; "
+    "level→fixed; td→viridis/BrBG/PuOr/RdYlGn (tip: --vmin 0)\n"
+)
 
-def _extract_text_like_cli(res: Any) -> str:
-    """
-    Mirror odbchat_cli.ODBChatClient._extract_text behavior so we can parse tool results.
-    """
+ALLOWED_FIELDS = {"sst", "sst_anomaly", "level", "td"}
 
-    # match the logic in odbchat_cli.py
-    if hasattr(res, 'text') and res.text is not None:
-        return res.text
-    if hasattr(res, 'content'):
-        c = res.content
-        if isinstance(c, list) and c:
-            first = c[0]
-            if hasattr(first, 'text') and first.text is not None:
-                return first.text
-            return str(first)
-        return str(c)
-    if isinstance(res, str):
-        return res
-    return json.dumps(res, ensure_ascii=False)
+# ------------------------------ utils ------------------------------
 
-async def _call_mcp_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
-    global _CLI
-    if _CLI is None or _CLI.client is None:
-        return None
-    try:
-        res = await _CLI.client.call_tool(tool_name, args)
-        text = _extract_text_like_cli(res)
-        return json.loads(text)
-    except Exception:
-        return None
+def _strip_q(s: str) -> str:
+    return s.strip().strip('"').strip("'")
 
-def _http_json(params: Dict[str, Any]) -> Dict[str, Any]:
-    r = requests.get(MHW_API_JSON, params=params, timeout=60)
-    r.raise_for_status()
-    return {"data": r.json(), "endpoint": MHW_API_JSON, "params": params}
+_PARSE = ("%Y-%m-%d", "%Y%m%d", "%Y-%m", "%Y%m", "%Y")
 
-def _http_csv(params: Dict[str, Any]) -> Dict[str, Any]:
-    from urllib.parse import urlencode
-    return {
-        "download_url": f"{MHW_API_CSV}?{urlencode(params)}",
-        "endpoint": MHW_API_CSV,
-        "params": params
-    }
+def _norm_month_first(s: str) -> str:
+    s = _strip_q(s)
+    for fmt in _PARSE:
+        try:
+            dt = datetime.strptime(s, fmt)
+            return f"{dt.year:04d}-{dt.month:02d}-01"
+        except Exception:
+            pass
+    dt = pd.to_datetime(s)
+    return f"{dt.year:04d}-{dt.month:02d}-01"
 
-def _parse_bbox(bbox: Optional[str]) -> Dict[str, Any]:
-    if not bbox:
-        return {}
-    parts = [x.strip() for x in bbox.split(",") if x.strip()]
-    if len(parts) not in (2,4):
-        print("Invalid --bbox. Use lon0,lat0[,lon1,lat1].", file=sys.stderr)
-        return {}
-    out = {"lon0": float(parts[0]), "lat0": float(parts[1])}
-    if len(parts) == 4:
-        out["lon1"] = float(parts[2]); out["lat1"] = float(parts[3])
-    return out
+def _latest_12_complete_months(today: Optional[date] = None) -> Tuple[str, str]:
+    if today is None:
+        today = date.today()
+    if today.day >= 18:
+        y, m = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
+    else:
+        if today.month > 2:
+            y, m = today.year, today.month - 2
+        else:
+            y = today.year - 1
+            m = 12 if today.month == 1 else 11
+    end = date(y, m, 1)
+    m2 = m - 11
+    y2 = y + (m2 - 1) // 12
+    m2 = ((m2 - 1) % 12) + 1
+    start = date(y2, m2, 1)
+    return start.isoformat(), end.isoformat()
 
-def _records_to_df(records: List[Dict[str, Any]]) -> pd.DataFrame:
-    df = pd.DataFrame.from_records(records)
-    if "date" in df.columns:
+def _records_to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
+    df = pd.DataFrame(rows or [])
+    if "date" in df.columns and not pd.api.types.is_datetime64_any_dtype(df["date"]):
         df["date"] = pd.to_datetime(df["date"])
     return df
 
-def _build_args_from_tokens(tokens: List[str]) -> Dict[str, Any]:
-    """
-    Simple inline parser for: /mhw [free-text intent] [flags]
-    Flags:
-      --bbox lon0,lat0[,lon1,lat1]
-      --start YYYY-MM-DD
-      --end YYYY-MM-DD
-      --fields sst,sst_anomaly,level,td
-      --csv
-      --raw
-      --plot series|month
-      --plot-field sst|sst_anomaly|level|td
-      --periods "1982-2011,2012-2021,2024"
-      --outfile path.png
-    """
+def _delta_lon_shortest(l0: float, l1: float) -> float:
+    d = ((l1 - l0 + 180.0) % 360.0) - 180.0
+    return abs(d)
 
-    args: Dict[str, Any] = {}
-    freeform: List[str] = []
+# ------------------------------ periods & bbox ------------------------------
 
+def _parse_periods_csv(csv: Optional[str], default_start: Optional[str], default_end: Optional[str]) -> List[Tuple[str, str, str]]:
+    out: List[Tuple[str, str, str]] = []
+    if csv and csv.strip():
+        tokens = [t.strip() for t in csv.split(",") if t.strip()]
+        for tok in tokens:
+            if "-" in tok:
+                a, b = tok.split("-", 1)
+                sa = _norm_month_first(a)
+                sb = _norm_month_first(b)
+                out.append((sa, sb, f"{sa[:7]}–{sb[:7]}"))
+            else:
+                s1 = _norm_month_first(tok)
+                out.append((s1, s1, s1[:7]))
+    else:
+        if default_start:
+            s = _norm_month_first(default_start)
+            e = _norm_month_first(default_end) if default_end else s
+        else:
+            s, e = _latest_12_complete_months()
+        out.append((s, e, f"{s[:7]}–{e[:7]}"))
+    return out
+
+def _split_bbox_by_180(lon0: float, lat0: float, lon1: Optional[float], lat1: Optional[float]) -> List[Tuple[float, float, Optional[float], Optional[float]]]:
+    if lon1 is None or lat1 is None:
+        return [(lon0, lat0, None, None)]
+    if _delta_lon_shortest(lon0, lon1) <= 180.0:
+        return [(lon0, lat0, lon1, lat1)]
+    # split into two continuous boxes
+    eps = 1e-3
+    return [(lon0, lat0, 180.0 - eps, lat1), (-180.0 + eps, lat0, lon1, lat1)]
+
+# ------------------------------ plugin loading ------------------------------
+
+def _load_symbol(module_names: List[str], file_candidates: List[str], symbol: str):
+    for m in module_names:
+        try:
+            mod = importlib.import_module(m)
+            fn = getattr(mod, symbol, None)
+            if callable(fn):
+                return fn
+        except Exception:
+            pass
+    here = os.path.dirname(__file__)
+    for rel in file_candidates:
+        path = os.path.join(here, rel)
+        if os.path.exists(path):
+            try:
+                spec = importlib.util.spec_from_file_location(symbol + "_dyn", path)
+                mod = importlib.util.module_from_spec(spec)
+                assert spec and spec.loader
+                spec.loader.exec_module(mod)  # type: ignore
+                fn = getattr(mod, symbol, None)
+                if callable(fn):
+                    return fn
+            except Exception:
+                pass
+    return None
+
+def _plot_series(df, fields, **kw):
+    fn = _load_symbol(
+        ["cli.plugins.mhw_plot", "plugins.mhw_plot", "cli.mhw_plot", "mhw_plot"],
+        ["plugins/mhw_plot.py", "mhw_plot.py"],
+        "plot_series",
+    )
+    if not fn:
+        print("[plot plugin missing] mhw_plot.plot_series", file=sys.stderr)
+        return
+    fn(df, fields=fields, **kw)
+
+def _plot_month(df, field, periods, **kw):
+    fn = _load_symbol(
+        ["cli.plugins.mhw_plot", "plugins.mhw_plot", "cli.mhw_plot", "mhw_plot"],
+        ["plugins/mhw_plot.py", "mhw_plot.py"],
+        "plot_month_climatology",
+    )
+    if not fn:
+        print("[plot plugin missing] mhw_plot.plot_month_climatology", file=sys.stderr)
+        return
+    fn(df, field=field, periods=periods, **kw)
+
+def _plot_map(df, field, bbox, start, **kw):
+    fn = _load_symbol(
+        ["cli.plugins.map_plot", "plugins.map_plot", "cli.map_plot", "map_plot"],
+        ["plugins/map_plot.py", "map_plot.py"],
+        "plot_map",
+    )
+    if not fn:
+        print("[map plugin missing] map_plot.plot_map", file=sys.stderr)
+        return
+    fn(df, field=field, bbox=bbox, start=start, **kw)
+
+# ------------------------------ MCP call ------------------------------
+
+async def _mcp_call(cli, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not getattr(cli, "client", None):
+        print("❌ Not connected. Use '/server connect' first.", file=sys.stderr)
+        return None
+
+    async def _do(tool_name: str):
+        res = await cli.client.call_tool(tool_name, args)
+        if isinstance(res, dict):
+            return res
+        if hasattr(res, "content"):
+            c = res.content
+            if isinstance(c, list) and c and hasattr(c[0], "text"):
+                txt = c[0].text
+                try:
+                    return json.loads(txt) if txt and txt.strip().startswith("{") else {"raw": txt}
+                except Exception:
+                    return {"raw": txt}
+        if hasattr(res, "text") and res.text:
+            try:
+                return json.loads(res.text) if res.text.strip().startswith("{") else {"raw": res.text}
+            except Exception:
+                return {"raw": res.text}
+        return {"raw": str(res)}
+
+    try:
+        return await _do("mhw_fetch")
+    except Exception:
+        try:
+            return await _do("mhw_query")
+        except Exception as e:
+            print(f"❌ MCP call failed: {e}", file=sys.stderr)
+            return None
+
+# ------------------------------ flags & canonicalization ------------------------------
+
+def _parse_mhw_flags(tokens: List[str]) -> Dict[str, Any]:
+    p: Dict[str, Any] = {
+        "lon0": None, "lat0": None, "lon1": None, "lat1": None,
+        "start": None, "end": None,
+        "_fields": None, "_plot": None, "_plot_field": None,
+        "_periods": None, "_outfile": None, "_map_method": None,
+        "_cmap": None, "_vmin": None, "_vmax": None, "_csv": False, "_raw": False,
+    }
     i = 0
     while i < len(tokens):
         t = tokens[i]
-        if t == "--bbox" and i+1 < len(tokens):
-            args.update(_parse_bbox(tokens[i+1])); i += 2; continue
-        if t == "--start" and i+1 < len(tokens):
-            args["start"] = tokens[i+1]; i += 2; continue
-        if t == "--end" and i+1 < len(tokens):
-            args["end"] = tokens[i+1]; i += 2; continue
-        if t == "--fields" and i+1 < len(tokens):
-            args["append"] = tokens[i+1]; i += 2; continue
-        if t == "--csv":
-            args["output"] = "csv"; i += 1; continue
-        if t == "--raw":
-            args["return_raw"] = True; i += 1; continue
-        if t == "--plot" and i+1 < len(tokens):
-            args["_plot_mode"] = tokens[i+1]; i += 2; continue
-        if t == "--plot-field" and i+1 < len(tokens):
-            args["_plot_field"] = tokens[i+1]; i += 2; continue
-        if t == "--periods" and i+1 < len(tokens):
-            args["_periods"] = tokens[i+1]; i += 2; continue
-        if t == "--outfile" and i+1 < len(tokens):
-            args["_outfile"] = tokens[i+1]; i += 2; continue
-        # collect free-form
-        freeform.append(t); i += 1
+        if t == "--bbox" and i + 1 < len(tokens):
+            parts = [x.strip() for x in tokens[i + 1].split(",")]
+            if len(parts) >= 2:
+                p["lon0"], p["lat0"] = float(parts[0]), float(parts[1])
+            if len(parts) == 4:
+                p["lon1"], p["lat1"] = float(parts[2]), float(parts[3])
+            i += 2; continue
+        if t == "--start" and i + 1 < len(tokens): p["start"] = _strip_q(tokens[i + 1]); i += 2; continue
+        if t == "--end"   and i + 1 < len(tokens): p["end"]   = _strip_q(tokens[i + 1]); i += 2; continue
+        if t == "--fields" and i + 1 < len(tokens): p["_fields"] = _strip_q(tokens[i + 1]); i += 2; continue
+        if t == "--plot" and i + 1 < len(tokens): p["_plot"] = tokens[i + 1].lower(); i += 2; continue
+        if t in ("--plot-field", "--plot_fields") and i + 1 < len(tokens): p["_plot_field"] = tokens[i + 1]; i += 2; continue
+        if t == "--periods" and i + 1 < len(tokens): p["_periods"] = _strip_q(tokens[i + 1]); i += 2; continue
+        if t == "--outfile" and i + 1 < len(tokens): p["_outfile"] = tokens[i + 1]; i += 2; continue
+        if t == "--map-method" and i + 1 < len(tokens): p["_map_method"] = tokens[i + 1]; i += 2; continue
+        if t == "--cmap" and i + 1 < len(tokens): p["_cmap"] = tokens[i + 1]; i += 2; continue
+        if t == "--vmin" and i + 1 < len(tokens):
+            try: p["_vmin"] = float(tokens[i + 1])
+            except Exception: p["_vmin"] = None
+            i += 2; continue
+        if t == "--vmax" and i + 1 < len(tokens):
+            try: p["_vmax"] = float(tokens[i + 1])
+            except Exception: p["_vmax"] = None
+            i += 2; continue
+        if t == "--csv": p["_csv"] = True; i += 1; continue
+        if t == "--raw": p["_raw"] = True; i += 1; continue
+        i += 1
+    return p
 
-    if freeform:
-        args["user_intent"] = " ".join(freeform)
-    return args
+def _canonical_fetch_arglist(p: Dict[str, Any]) -> List[Dict[str, Any]]:
+    lon0, lat0, lon1, lat1 = p.get("lon0"), p.get("lat0"), p.get("lon1"), p.get("lat1")
+    if lon0 is None or lat0 is None:
+        lon0, lat0, lon1, lat1 = 118.0, 21.0, 123.0, 26.0  # Taiwan default
 
-def _load_plot_plugin():
-    """
-    Try multiple strategies so CLI works whether you run as a package or a plain script.
-    Returns a module with plot_series / plot_month_climatology or None.
-    """
-    # 0) Already importable?
-    for modname in ("plugins.mhw_plot", "mhw_plot", "cli.plugins.mhw_plot", "cli.mhw_plot"):
-        try:
-            return importlib.import_module(modname)
-        except Exception:
-            pass
+    periods = _parse_periods_csv(p.get("_periods"), p.get("start"), p.get("end"))
+    bbox_parts = _split_bbox_by_180(float(lon0), float(lat0),
+                                    None if lon1 is None else float(lon1),
+                                    None if lat1 is None else float(lat1))
 
-    # 1) Load by file path next to this file
-    here = os.path.dirname(__file__)
-    candidates = [
-        os.path.join(here, "plugins", "mhw_plot.py"),
-        os.path.join(here, "mhw_plot.py"),
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                spec = importlib.util.spec_from_file_location("mhw_plot_dyn", path)
-                mod = importlib.util.module_from_spec(spec)
-                assert spec and spec.loader
-                spec.loader.exec_module(mod)
-                return mod
-            except Exception:
-                continue
+    fields = p.get("_fields") or "sst,sst_anomaly"
+    outmode = "csv" if p.get("_csv") else "json"
+    include = not p.get("_csv")
 
-    return None
+    arglist: List[Dict[str, Any]] = []
+    for (s, e, _lab) in periods:
+        for (bx0, by0, bx1, by1) in bbox_parts:
+            arglist.append({
+                "lon0": bx0, "lat0": by0,
+                "lon1": bx1, "lat1": by1,
+                "start": s, "end": e,
+                "append": fields,
+                "output": outmode,
+                "include_data": include,
+            })
+    return arglist
 
-def _run_plot(df, args, fields):
-    mode = args.get("_plot_mode")
-    if not mode:
-        return
-
-    plug = _load_plot_plugin()
-    if plug is None:
-        print("[plot plugin missing] Could not find plugins/mhw_plot.py or mhw_plot.py", file=sys.stderr)
-        print("Tip: place the plugin under cli/plugins/mhw_plot.py or cli/mhw_plot.py, or install as a module.", file=sys.stderr)
-        return
-
-    # Handle missing matplotlib nicely
+def _warn_limits(bbox: Tuple[float, float, Optional[float], Optional[float]], start: str, end: str):
     try:
-        plot_series = getattr(plug, "plot_series")
-        plot_month_climatology = getattr(plug, "plot_month_climatology")
-    except Exception as e:
-        print(f"[plot plugin error] {e}", file=sys.stderr)
-        return
+        lo0, la0, lo1, la1 = bbox
+        if lo1 is None or la1 is None:
+            return
+        lon_span = abs(lo1 - lo0)
+        lat_span = abs(la1 - la0)
+        days = (pd.to_datetime(end) - pd.to_datetime(start)).days + 1
+        msg = None
+        if lon_span > 90 and lat_span > 90 and days > 31:
+            msg = ">90×90° bbox → ~1 month max (server will clamp)"
+        elif lon_span > 10 and lat_span > 10 and days > 366:
+            msg = ">10×10° bbox → ~1 year max (server will clamp)"
+        elif lon_span <= 10 and lat_span <= 10 and days > 3650:
+            msg = "≤10×10° bbox → ~10 years max (server will clamp)"
+        if msg:
+            print(f"[notice] {msg}. Consider splitting.", file=sys.stderr)
+    except Exception:
+        pass
 
-    try:
-        if mode == "series":
-            title = "MHW Time Series"
-            outfile = args.get("_outfile")
-            plot_series(df, fields=fields, title=title, outfile=outfile)
-            if outfile:
-                print(f"🖼  Saved: {outfile}")
-        elif mode == "month":
-            periods_raw = args.get("_periods")
-            periods = [p.strip() for p in (periods_raw or "").split(",") if p.strip()] or None
-            field = args.get("_plot_field") or "sst"
-            outfile = args.get("_outfile")
-            plot_month_climatology(df, field=field, periods=periods,
-                                   title=f"Monthly Climatology ({field})", outfile=outfile)
-            if outfile:
-                print(f"🖼  Saved: {outfile}")
-        else:
-            print(f"Unknown plot mode: {mode}", file=sys.stderr)
+# ------------------------------ main handler ------------------------------
 
-    except ModuleNotFoundError as me:
-        # Typical: No module named 'matplotlib'
-        missing = getattr(me, "name", "a required plotting dependency")
-        print(f"[plot dependency missing] {me}", file=sys.stderr)
-        print("Tip: plotting is optional. Install minimal deps for the plugin:", file=sys.stderr)
-        print("     pip install matplotlib pandas", file=sys.stderr)
-    except Exception as e:
-        print(f"[plot error] {e}", file=sys.stderr)
-
-# -----------------------------
-# Period parsing for API params
-# -----------------------------
-def _strip_quotes(s: str) -> str:
-    if not s:
-        return s
-    quotes = {'"', "'", '“', '”', '‘', '’'}
-    out = s.strip()
-    while len(out) >= 2 and out[0] in quotes and out[-1] in quotes:
-        out = out[1:-1].strip()
-    return out
-
-def _convert_to_day(date_str: str) -> str:
-    """
-    Convert various compact date strings to 'YYYY-MM-DD'.
-    Accepts: YYYY-MM-DD, YYYYMMDD, YYYY-MM, YYYYMM, YYYY.
-    Returns YYYY-MM-DD (first day for YYYY/YYYMM forms).
-    """
-    s = _strip_quotes((date_str or '').strip())
-    # Try precise formats first
-    for fmt in ("%Y-%m-%d", "%Y%m%d"):
-        try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-    # Month-only
-    for fmt in ("%Y-%m", "%Y%m"):
-        try:
-            dt = datetime.strptime(s, fmt)
-            return dt.strftime("%Y-%m-01")
-        except ValueError:
-            pass
-    # Year-only
-    if len(s) == 4 and s.isdigit():
-        try:
-            return datetime.strptime(s, "%Y").strftime("%Y-01-01")
-        except ValueError:
-            pass
-    raise ValueError(f"Invalid date format: {date_str}")
-
-def _period_to_bounds(period: str, default_start: str = '1982-01-01') -> Tuple[str, str]:
-    """
-    Convert 'start-end' period string into YYYY-MM-DD start/end.
-    start/end may be '', meaning default_start or latest full month start.
-    Supports start/end formats accepted by _convert_to_day.
-    """
-    raw = _strip_quotes((period or '').strip())
-    if '-' not in raw:
-        # Single token: treat as a single year/month/day; compute a 1-year or 1-month window? Use exact day → same day.
-        # For climatology, single token likely means a year. We'll map to full coverage:
-        s_norm = _convert_to_day(raw)
-        # Determine granularity by length
-        if len(raw) == 4:  # year
-            s = datetime.strptime(s_norm, "%Y-%m-%d")
-            e = datetime(s.year + 1, 1, 1)
-            e = (e.replace(day=1) - pd.DateOffset(days=1)).date()
-            return s_norm, date(e.year, e.month, e.day).strftime("%Y-%m-%d")
-        if len(raw) in (6, 7):  # YYYYMM or YYYY-MM as month
-            s = datetime.strptime(s_norm, "%Y-%m-%d")
-            # next month first day
-            if s.month == 12:
-                e = datetime(s.year + 1, 1, 1)
-            else:
-                e = datetime(s.year, s.month + 1, 1)
-            e = (e - pd.DateOffset(days=1)).date()
-            return s_norm, date(e.year, e.month, e.day).strftime("%Y-%m-%d")
-        # exact day
-        return s_norm, s_norm
-
-    start, end = raw.split('-', 1)
-    start = _strip_quotes(start.strip())
-    end = _strip_quotes(end.strip())
-    try:
-        if not start:
-            start = default_start
-        else:
-            start = _convert_to_day(start)
-
-        if not end:
-            # last full month first day
-            today = pd.Timestamp.today().to_pydatetime()
-            last_month_first = (today.replace(day=1) - pd.DateOffset(months=1)).date()
-            end = date(last_month_first.year, last_month_first.month, last_month_first.day).strftime("%Y-%m-%d")
-        else:
-            end = _convert_to_day(end)
-
-        return start, end
-    except ValueError as e:
-        raise ValueError(str(e))
-
-def _overall_bounds_from_periods(periods_csv: str) -> Tuple[str, str]:
-    """
-    Given a CSV of periods, return the min start and max end.
-    """
-    csv_clean = _strip_quotes((periods_csv or '').strip())
-    periods = [_strip_quotes(p.strip()) for p in csv_clean.split(',') if p.strip()]
-    starts: List[str] = []
-    ends: List[str] = []
-    for p in periods:
-        s, e = _period_to_bounds(p)
-        starts.append(s)
-        ends.append(e)
-    if not starts:
-        raise ValueError("No valid periods")
-    s_min = min(starts)
-    e_max = max(ends)
-    return s_min, e_max
-
-async def _cmd_mhw_line(cli, line: str) -> None:
-    """
-    Handle a single '/mhw ...' line using the connected CLI (sync wrapper).
-    """
-
+async def handle_mhw(cli, line: str):
     tokens = line.strip().split()[1:]  # drop '/mhw'
-    pargs = _build_args_from_tokens(tokens)
+    p = _parse_mhw_flags(tokens)
 
-    # Prepare per-period bounds if provided
-    bounds_list: List[Tuple[str, str, str]] = []  # (label, start, end)
-    if pargs.get("_periods"):
-        try:
-            csv_clean = _strip_quotes(pargs.get("_periods", "").strip())
-            for token in [t for t in csv_clean.split(',') if t.strip()]:
-                tok = _strip_quotes(token.strip())
-                s, e = _period_to_bounds(tok)
-                bounds_list.append((tok, s, e))
-        except Exception as e:
-            print(f"[period parse warning] {e}", file=sys.stderr)
+    arglist = _canonical_fetch_arglist(p)
+    if not arglist:
+        print("[mhw] no arguments produced from flags", file=sys.stderr)
+        return
 
-    # 1) Try MCP mhw_query (excluding plotting-only args)
-    base_args = {k: v for k, v in pargs.items() if not k.startswith("_")}
-    res = None
-    if not bounds_list:
-        res = await _call_mcp_tool("mhw_query", base_args)
+    a0 = arglist[0]
+    _warn_limits((a0["lon0"], a0["lat0"], a0.get("lon1"), a0.get("lat1")), a0["start"], a0.get("end") or a0["start"])
 
-    # 2) If MCP not available, or we need multi-period fetches, HTTP/MCP per-period fallback
-    if res is None or bounds_list:
-        params_base = {k: v for k, v in pargs.items() if k in {"lon0","lat0","lon1","lat1","append"}}
-        out_meta: List[Dict[str, Any]] = []
-        all_records: List[Dict[str, Any]] = []
-        # If no bounds_list, derive one from provided start/end or overall
-        if not bounds_list:
-            s = pargs.get("start")
-            e = pargs.get("end")
-            if not (s and e) and pargs.get("_periods"):
-                s, e = _overall_bounds_from_periods(pargs.get("_periods", ""))
-            if not (s and e):
-                # leave empty to trigger defaults server-side
-                pass
-            else:
-                bounds_list = [(f"{s}-{e}", s, e)]
+    if arglist[0]["output"] == "csv":
+        outs = []
+        for args in arglist:
+            res = await _mcp_call(cli, "mhw_fetch", args)
+            if not res:
+                print("[mcp error] mhw_fetch failed", file=sys.stderr); return
+            outs.append(res)
+        print(json.dumps(outs if len(outs) > 1 else outs[0], ensure_ascii=False, indent=2))
+        return
 
-        if pargs.get("output") == "csv":
-            # Print a CSV URL per period
-            for label, s, e in bounds_list or [("", params_base.get("start"), params_base.get("end"))]:
-                p = dict(params_base)
-                if s: p["start"] = s
-                if e: p["end"] = e
-                out = _http_csv(p)
-                out_meta.append({"label": label, **{k: v for k, v in out.items()}})
-            print(json.dumps(out_meta, ensure_ascii=False, indent=2))
+    frames: List[pd.DataFrame] = []
+    metas: List[Dict[str, Any]] = []
+    for args in arglist:
+        res = await _mcp_call(cli, "mhw_fetch", args)
+        if not res or "data" not in res:
+            print("[mcp error] mhw_fetch did not return data", file=sys.stderr)
             return
+        df = _records_to_df(res["data"])
+        s_lab = (args["start"] or "")[:7]
+        e_lab = (args.get("end") or args["start"] or "")[:7]
+        df["period"] = f"{s_lab}–{e_lab}"
+        frames.append(df)
+        metas.append({k: v for k, v in res.items() if k != "data"})
 
-        # JSON fetches per period: try MCP per-period first if client available
-        if _CLI is not None and _CLI.client is not None:
-            for label, s, e in bounds_list:
-                args_i = dict(base_args)
-                if s: args_i["start"] = s
-                if e: args_i["end"] = e
-                args_i["return_raw"] = True
-                try:
-                    r = await _call_mcp_tool("mhw_query", args_i)
-                except Exception:
-                    r = None
-                if r and isinstance(r, dict) and "data" in r:
-                    all_records.extend(r.get("data") or [])
-                    # capture meta for printing
-                    out_meta.append({"endpoint": r.get("endpoint"), "params": r.get("params"), "label": label})
-                else:
-                    # fallback to HTTP for that period
-                    p = dict(params_base)
-                    if s: p["start"] = s
-                    if e: p["end"] = e
-                    http_res = _http_json(p)
-                    out_meta.append({k: v for k, v in http_res.items() if k != "data"} | {"label": label})
-                    all_records.extend(http_res.get("data") or [])
-        else:
-            # No MCP client: HTTP per period
-            for label, s, e in bounds_list:
-                p = dict(params_base)
-                if s: p["start"] = s
-                if e: p["end"] = e
-                http_res = _http_json(p)
-                out_meta.append({k: v for k, v in http_res.items() if k != "data"} | {"label": label})
-                all_records.extend(http_res.get("data") or [])
-
-        # Print simple meta summary
-        print(json.dumps(out_meta, ensure_ascii=False, indent=2))
-        # Plot if requested
-        fields = (pargs.get("append") or "sst,sst_anomaly").split(",")
-        fields = [f.strip() for f in fields if f.strip()]
-        _run_plot(_records_to_df(all_records), pargs, fields)
+    if not frames:
+        print("[mhw] empty result", file=sys.stderr)
         return
 
-    # 3) MCP JSON result
-    # Print non-data parts for readability
-    printable = {k: v for k, v in res.items() if k not in {"data"}}
-    print(json.dumps(printable, ensure_ascii=False, indent=2))
+    big = pd.concat(frames, ignore_index=True, sort=False)
 
-    # CSV branch ends here
-    if "download_url" in res:
+    # concise merged summary
+    if len(metas) == 1:
+        summary = metas[0]; summary.pop("data", None)
+    else:
+        summary = {
+            "note": f"merged {len(metas)} API responses (periods × bbox parts)",
+            "components": [{"bbox": m.get("bbox"), "period": m.get("period")} for m in metas],
+        }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    if p.get("_raw"):
+        print(big.head().to_string(index=False)); return
+
+    mode = (p.get("_plot") or "").lower()
+
+    if mode == "series":
+        fields = [f.strip() for f in (p.get("_plot_field") or arglist[0]["append"]).split(",") if f.strip() in ALLOWED_FIELDS]
+        if not fields: fields = ["sst", "sst_anomaly"]
+        _plot_series(big, fields=fields, outfile=p.get("_outfile"))
         return
 
-    # If plotting requested, ensure we have raw data; if not, re-fetch via HTTP.
-    data = res.get("data")
-    if data is None:
-        params = res.get("params", {})
-        http_res = _http_json(params)
-        data = http_res["data"]
+    if mode == "month":
+        fld = (p.get("_plot_field") or "sst").strip()
+        _plot_month(big, field=fld, periods=p.get("_periods") or "", outfile=p.get("_outfile"))
+        return
 
-    fields = res.get("fields") or (pargs.get("append") or "sst,sst_anomaly").split(",")
-    fields = [f.strip() for f in fields if f.strip()]
-    _run_plot(_records_to_df(data), pargs, fields)
+    if mode == "map":
+        fld = (p.get("_plot_field") or "sst_anomaly").strip()
+        first = arglist[0]
+        bbox = (first["lon0"], first["lat0"], first.get("lon1"), first.get("lat1"))
+        start_for_map = first["start"]
+        _plot_map(big, field=fld, bbox=bbox, start=start_for_map,
+                  outfile=p.get("_outfile"), method=p.get("_map_method"),
+                  cmap=p.get("_cmap"), vmin=p.get("_vmin"), vmax=p.get("_vmax"))
+        return
 
-def install_mhw_command(cli) -> None:
-    """
-    Attach '/mhw' command to an existing ODBChatClient without modifying its code.
-    """
+    return
 
-    global _CLI
-    _CLI = cli  # so _call_mcp_tool can use the connected FastMCP client
-
-    original = cli._handle_command  # keep reference
-
-    async def _patched_handle(line: str):
+def patch_mhw_command(cli) -> None:
+    if hasattr(cli, "register_command") and callable(getattr(cli, "register_command")):
+        cli.register_command("/mhw", handle_mhw, help_text=MHW_HELP)
+        return
+    original = getattr(cli, "_handle_command", None)
+    async def _patched(line: str):
         if line.strip().lower().startswith("/mhw"):
-            # run synchronously in current thread (HTTP + plotting are sync)
-            await _cmd_mhw_line(cli, line)
-            return
-        await original(line)
+            await handle_mhw(cli, line); return
+        if original:
+            await original(line)
+        else:
+            print("❓ Unknown command. /help for help.")
+    setattr(cli, "_handle_command", _patched)
 
-    # monkey-patch
-    cli._handle_command = _patched_handle  # type: ignore
+# pluggable register
+def install_mhw_command(cli):
+    cli.register_command("/mhw", handle_mhw, help_text=MHW_HELP)
+

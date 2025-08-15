@@ -1,164 +1,119 @@
 # api/mhw_mcp.py
 from __future__ import annotations
-# from typing import (
-     # Optional, Literal,
-     # Dict, Any, List, Tuple
-#)
-from datetime import date
 import requests
+from fastmcp import FastMCP
+# from typing import Dict, Any, List
+from datetime import datetime
 
 MHW_API_JSON = "https://eco.odb.ntu.edu.tw/api/mhw"
 MHW_API_CSV  = "https://eco.odb.ntu.edu.tw/api/mhw/csv"
 ALLOWED_FIELDS = {"sst", "sst_anomaly", "level", "td"}
 
-REGION_PRESETS = {
-    "taiwan": (118.0, 21.0, 123.0, 26.0),
-    "台灣":   (118.0, 21.0, 123.0, 26.0),
-    "tw":     (118.0, 21.0, 123.0, 26.0),
-}
-
-def _default_range(today: date | None = None):
-    """12-month window; latest month = (today >=18 ? last month : two months ago)."""
-    if today is None:
-        today = date.today()
-    if today.day >= 18:
-        end_y, end_m = (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
-    else:
-        if today.month > 2:
-            end_y, end_m = (today.year, today.month - 2)
-        else:
-            end_y = today.year - 1
-            end_m = 12 if today.month == 1 else 11
-    end = date(end_y, end_m, 1)
-    # 11 months before end → total 12 months
-    y, m = end.year, end.month
-    m2 = m - 11
-    y2 = y + (m2 - 1) // 12
-    m2 = ((m2 - 1) % 12) + 1
-    start = date(y2, m2, 1)
-    return start.isoformat(), end.isoformat()
-
-def _pick_bbox(
-    region_hint: str | None = None, # Optional[str],
-    lon0: float | None = None, # Optional[float],
-    lat0: float | None = None, # Optional[float],
-    lon1: float | None = None, # Optional[float],
-    lat1: float | None = None  # Optional[float],
-): # -> Tuple[float, float, Optional[float], Optional[float]]:
-    if lon0 is not None and lat0 is not None:
-        return float(lon0), float(lat0), (None if lon1 is None else float(lon1)), (None if lat1 is None else float(lat1))
-    if region_hint:
-        key = region_hint.strip().lower()
-        if key in REGION_PRESETS:
-            return REGION_PRESETS[key]
-    return REGION_PRESETS["taiwan"]
-
-def _normalize_fields(append: str | None = None) -> str:
+def _normalize_fields(append: str | None) -> str:
     if not append:
         return "sst,sst_anomaly"
     parts = [p.strip() for p in append.split(",") if p.strip()]
     parts = [p for p in parts if p in ALLOWED_FIELDS]
     if not parts:
         parts = ["sst", "sst_anomaly"]
-    # 去重保序
-    return ",".join(dict.fromkeys(parts))
+    return ",".join(dict.fromkeys(parts))  # dedupe, keep order
 
-def _needs_csv(user_intent: str | None = None, output: str | None = None) -> bool:
-    if output and output.lower() == "csv":
-        return True
-    if not user_intent:
-        return False
-    hint = user_intent.lower()
-    return any(k in hint for k in ["csv", "下載", "檔案"])
+def _to_float(v):
+    return None if v is None else float(v)
 
-def _area_mean(records, fields): # List[Dict[str, Any]], fields: List[str]) -> Dict[str, Any]:
-    n = len(records)
-    out = {"count": n}
-    if n == 0:
+def _summarize(data, fields): #List[Dict[str, Any]], fields: List[str]) -> Dict[str, Any]:
+    out = {"count": len(data)} #out: Dict[str, Any] =
+    if not data:
         return out
+    try:
+        dates = [d.get("date") for d in data if d.get("date")]
+        ds = [datetime.fromisoformat(x).date() for x in dates]
+        out["effective_period"] = [min(ds).isoformat(), max(ds).isoformat()]
+    except Exception:
+        pass
     for f in fields:
-        vals = [r.get(f) for r in records if r.get(f) is not None]
+        vals = [d.get(f) for d in data if isinstance(d.get(f), (int, float))]
         if vals:
             out[f + "_mean"] = sum(vals) / len(vals)
     return out
 
-def register_mhw_tools(mcp) -> None:
-    """
-    Call from your server to register the mhw_query tool onto the FastMCP instance.
-    """
-
+def register_mhw_tools(mcp: FastMCP) -> None:
     @mcp.tool()
-    async def mhw_query(
-          user_intent: str | None = None,
-          region_hint: str | None = None,
-          output: str = "json",            # validate below
-          lon0: float | None = None,
-          lat0: float | None = None,
-          lon1: float | None = None,
-          lat1: float | None = None,
-          start: str | None = None,
-          end: str | None = None,
-          append: str | None = None,
-          return_raw: bool | None = False,
-        ):  # -> dict[str, Any]:
+    async def mhw_fetch(
+        lon0: float,
+        lat0: float,
+        lon1: float | None = None,
+        lat1: float | None = None,
+        start: str = "",
+        end: str = "",
+        append: str = "sst,sst_anomaly",
+        output: str = "json",          # 'json' | 'csv'
+        include_data: bool = True,     # for 'json' only
+    ):  # -> Dict[str, Any]:
         """
-        Query ODB MHW data with convenient defaults and CSV intent detection.
+        Fetch ODB Marine Heatwaves (MHW) data (thin tool; no intent/defaults).
+
+        Required
+        --------
+        lon0, lat0 : lower-left (or single point) in degrees
+        start, end : 'YYYY-MM-DD' (for JSON); map use-cases may set start=end (month)
+
+        Optional
+        --------
+        lon1, lat1 : upper-right (omit for point)
+        append     : comma-joined variables in {sst, sst_anomaly, level, td}
+        output     : 'json' → records; 'csv' → URL only
+        include_data: when output='json', include 'data' array (default True)
+
+        Notes
+        -----
+        API will clamp long periods for large bboxes:
+          ≤10×10° → ≤10y,  >10×10° → ≤1y,  >90×90° → ≤1mo.
+        Results include a small 'summary' and echoed 'params'.
+
+        TW 範例:
+        1) JSON: 台灣近 12 個月（由 client 準備 start/end/bbox）
+           mhw_fetch(118,21,123,26,"2024-07-01","2025-06-01","sst,sst_anomaly","json",True)
+        2) CSV: 回傳 download_url，不帶 data
+           mhw_fetch(118,21,123,26,"2024-07-01","2025-06-01","sst,sst_anomaly","csv",False)
         """
-        bx0, by0, bx1, by1 = _pick_bbox(region_hint, lon0, lat0, lon1, lat1)
+        fields_csv = _normalize_fields(append)
+        fields = [f.strip() for f in fields_csv.split(",")]
 
-        if not start or not end:
-            start, end = _default_range()
-
-        if output not in ("json", "csv"):
-            output = "json"
-
-        append_norm = _normalize_fields(append)
-        fields = [f.strip() for f in append_norm.split(",")]
-
-        use_csv = _needs_csv(user_intent, output)
-        url = MHW_API_CSV if use_csv else MHW_API_JSON
-
-        params = {
-            "lon0": bx0,
-            "lat0": by0,
-            "start": start,
-            "end": end,
-            "append": append_norm,
+        url = MHW_API_CSV if output.lower() == "csv" else MHW_API_JSON
+        params = { #: Dict[str, Any]
+            "lon0": _to_float(lon0),
+            "lat0": _to_float(lat0),
+            "append": fields_csv,
         }
-        if bx1 is not None: params["lon1"] = bx1
-        if by1 is not None: params["lat1"] = by1
+        if lon1 is not None: params["lon1"] = _to_float(lon1)
+        if lat1 is not None: params["lat1"] = _to_float(lat1)
+        if start: params["start"] = start
+        if end:   params["end"] = end
 
-        if use_csv:
+        if output.lower() == "csv":
             from urllib.parse import urlencode
             return {
                 "endpoint": url,
-                "download_url": f"{url}?{urlencode(params)}",
-                "bbox": [bx0, by0, bx1, by1],
-                "period": [start, end],
+                "params": params,
+                "bbox": [params.get("lon0"), params.get("lat0"), params.get("lon1"), params.get("lat1")],
+                "period": [params.get("start"), params.get("end")],
                 "fields": fields,
+                "download_url": f"{url}?{urlencode(params)}",
             }
 
-        resp = requests.get(url, params=params, timeout=60)
+        resp = requests.get(url, params=params, timeout=90)
         resp.raise_for_status()
         data = resp.json()
-
-        if return_raw:
-            return {
-                "endpoint": url,
-                "params": params,
-                "bbox": [bx0, by0, bx1, by1],
-                "period": [start, end],
-                "fields": fields,
-                "data": data,
-            }
-
-        summary = _area_mean(data, fields)
-        return {
+        result = { #: Dict[str, Any] = {
             "endpoint": url,
             "params": params,
-            "bbox": [bx0, by0, bx1, by1],
-            "period": [start, end],
+            "bbox": [params.get("lon0"), params.get("lat0"), params.get("lon1"), params.get("lat1")],
+            "period": [params.get("start"), params.get("end")],
             "fields": fields,
-            "summary": summary,
-            "sample": data[:5],
+            "count": len(data),
+            "summary": _summarize(data, fields),
         }
+        if include_data:
+            result["data"] = data
+        return result

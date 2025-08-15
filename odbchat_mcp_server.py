@@ -33,6 +33,11 @@ SUGGESTED_MODELS = [
 ]
 
 @mcp.tool()
+async def ping() -> str:
+    "Return 'pong' to verify the MCP server is alive."
+    return "pong"
+
+@mcp.tool()
 async def chat_with_odb(
     query: str,
     model: str = "gemma3:4b",

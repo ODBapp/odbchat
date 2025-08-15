@@ -1,208 +1,107 @@
-# Minimal plotting plugin for ODB MHW (matplotlib + pandas only)
+# cli/plugins/mhw_plot.py
 from __future__ import annotations
 from typing import List, Optional
+
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
-import re
 
-# Do not auto-raise windows when showing/refreshing figures
 plt.rcParams["figure.raise_window"] = False
 
-def _ensure_datetime(df: pd.DataFrame) -> pd.DataFrame:
+def _ensure_dt(df: pd.DataFrame) -> pd.DataFrame:
     if "date" not in df.columns:
-        raise ValueError("DataFrame must contain a 'date' column (YYYY-MM-DD).")
+        raise ValueError("DataFrame must include 'date'")
     if not pd.api.types.is_datetime64_any_dtype(df["date"]):
-        df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
     return df
 
-def _area_mean_by_date(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
-    # 對同日期的多格點做面平均
-    return (
-        df.dropna(subset=[value_col])
-          .groupby("date", as_index=False)[value_col]
-          .mean()
-          .sort_values("date")
-    )
+def _area_mean(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """
+    API returns 0.25° grid records; reduce to area-mean by date to avoid 'spiky'
+    plots (you saw that when every grid cell got plotted).
+    """
+    use = ["date"] + [c for c in cols if c in df.columns]
+    g = df[use].groupby("date", as_index=False).mean(numeric_only=True).sort_values("date")
+    return g
 
-def plot_series(
-    df: pd.DataFrame,
-    fields: List[str],
-    title: str = "MHW Time Series",
-    outfile: Optional[str] = None,
-) -> str | None:
-    df = _ensure_datetime(df)
+def plot_series(df: pd.DataFrame, fields: List[str], title: str = "MHW Time Series", outfile: Optional[str] = None):
+    df = _ensure_dt(df)
+    fields = [f for f in fields if f in df.columns]
+    if not fields:
+        fields = [c for c in ("sst","sst_anomaly") if c in df.columns]
+    if not fields:
+        raise ValueError("No plot fields available.")
 
-    valid_fields = [f for f in fields if f in df.columns]
-    if not valid_fields:
-        raise ValueError(f"No valid fields to plot from {fields}")
+    # reduce to area-mean by date
+    g = _area_mean(df, fields)
 
-    # Wide & short (≈12:4 for two panels)
-    nplots = len(valid_fields)
-    if nplots == 1:
-        figsize = (10, 3.2)
-    elif nplots == 2:
-        figsize = (10, 4.0)
+    if set(("sst","sst_anomaly")).issubset(g.columns):
+        fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+        axes[0].plot(g["date"], g["sst"], lw=1.6)
+        axes[0].set_ylabel("SST (°C)")
+        axes[0].grid(True, alpha=.3)
+
+        axes[1].plot(g["date"], g["sst_anomaly"], lw=1.6)
+        axes[1].axhline(0, color="k", lw=.8, alpha=.5)
+        axes[1].set_ylabel("SST Anomaly (°C)")
+        axes[1].grid(True, alpha=.3)
+        axes[1].xaxis.set_major_locator(mdates.AutoDateLocator())
+        axes[1].xaxis.set_major_formatter(mdates.ConciseDateFormatter(axes[1].xaxis.get_major_locator()))
+        fig.suptitle(title); fig.tight_layout()
     else:
-        figsize = (10, 2.6 * nplots)
-
-    fig, axes = plt.subplots(nplots, 1, figsize=figsize, sharex=True)
-    if nplots == 1:
-        axes = [axes]
-
-    # date formatter
-    locator = mdates.AutoDateLocator()
-    formatter = mdates.ConciseDateFormatter(locator)
-
-    for ax, field in zip(axes, valid_fields):
-        s = _area_mean_by_date(df, field)
-        if s.empty:
-            ax.set_visible(False)
-            continue
-
-        x = s["date"]
-        if field == "sst_anomaly":
-            ax.plot(x, s[field], linewidth=1.4, label=field, color='#fd8000')
-            ax.axhline(0.0, color="#666666", linewidth=0.8)
-            ax.set_ylabel("SST Anomalies")
-        else:
-            ax.plot(x, s[field], linewidth=1.4, label=field)
-            ax.set_ylabel(f"{'SST' if field == 'sst' else field.apitalize()}")
-
-        ax.legend(loc="upper right", frameon=False)
-        ax.grid(True, linestyle=":", linewidth=0.6, alpha=0.6)
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(formatter)
-
-    axes[-1].set_xlabel("Date")
-    fig.suptitle(title)
-    fig.tight_layout()
+        fig, ax = plt.subplots(figsize=(11,4))
+        for f in fields:
+            if f in g.columns:
+                ax.plot(g["date"], g[f], label=f, lw=1.6)
+        ax.grid(True, alpha=.3); ax.legend(); ax.set_title(title); ax.set_xlabel("Date")
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+        fig.tight_layout()
 
     if outfile:
-        plt.savefig(outfile, dpi=150)
-        plt.close(fig)
-        return outfile
-    else:
-        plt.show(block=False)
-        try:
-            fig.canvas.flush_events()   # no window raising
-        except Exception:
-            pass
-        return None
+        plt.savefig(outfile, dpi=150); plt.close(fig); return outfile
+    plt.show(block=False)
+    try: fig.canvas.flush_events()
+    except Exception: pass
+    return None
 
-def plot_month_climatology(
-    df: pd.DataFrame,
-    field: str = "sst",
-    periods: Optional[List[str]] = None,
-    title: str = "Monthly Climatology",
-    outfile: Optional[str] = None,
-) -> str | None:
-    """
-    月份氣候平均圖（把資料依 month 聚合）。
-    periods:
-      - None：用整段資料一組線
-      - ["2012-2021","2022","2023"]：可混合單一年份或年份區間
-    """
-    df = _ensure_datetime(df)
+def plot_month_climatology(df: pd.DataFrame, field: str = "sst", periods: str = "", title: str = "Monthly climatology",
+                           outfile: Optional[str] = None):
+    df = _ensure_dt(df).copy()
     if field not in df.columns:
-        raise ValueError(f"Field '{field}' not in DataFrame.")
+        raise ValueError(f"Field '{field}' not found in data.")
 
-    df = df.dropna(subset=[field]).copy()
     df["year"] = df["date"].dt.year
     df["month"] = df["date"].dt.month
 
-    def _parse_period(p: str) -> pd.Series:
-        """
-        Accept rich period formats and return a boolean mask over df:
-        - YYYY (single year)
-        - YYYY-YYYY (year range)
-        - YYYYMM or YYYY-MM (single month)
-        - YYYYMM-YYYYMM or YYYY-MM-YYYY-MM (month range)
-        - YYYYMMDD or YYYY-MM-DD (single day)
-        - YYYYMMDD-YYYYMMDD or YYYY-MM-DD-YYYY-MM-DD (day range)
-        """
-        s = p.strip().strip('"').strip("'")
-        # Single year
-        if re.fullmatch(r"\d{4}", s):
-            y = int(s)
-            return (df["year"] == y)
-        # Year range
-        m = re.fullmatch(r"(\d{4})\s*-\s*(\d{4})", s)
-        if m:
-            y0, y1 = int(m.group(1)), int(m.group(2))
-            return (df["year"] >= y0) & (df["year"] <= y1)
-
-        # Build date bounds for other formats
-        def _to_date(x: str) -> pd.Timestamp:
-            x = x.strip()
-            for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y-%m", "%Y%m", "%Y"):
-                try:
-                    dt = datetime.strptime(x, fmt)
-                    # Normalize month/year to first day
-                    if fmt in ("%Y-%m", "%Y%m"):
-                        dt = dt.replace(day=1)
-                    if fmt == "%Y":
-                        dt = dt.replace(month=1, day=1)
-                    return pd.Timestamp(dt.date())
-                except ValueError:
-                    continue
-            raise ValueError(f"Invalid date format: {x}")
-
-        # Day range / month range including hyphen variants
-        rng = re.fullmatch(r"(.+?)\s*-\s*(.+)", s)
-        if rng:
-            s0, s1 = rng.group(1), rng.group(2)
-            d0 = _to_date(s0)
-            d1 = _to_date(s1)
-            # Ensure d1 >= d0
-            if d1 < d0:
-                d0, d1 = d1, d0
-            return (df["date"] >= d0) & (df["date"] <= d1)
-
-        # Single month/day
-        try:
-            d = _to_date(s)
-            # Single day
-            if re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d{8}", s):
-                return (df["date"] == d)
-            # Single month (YYYYMM/ YYYY-MM) or year
-            if re.fullmatch(r"\d{4}-\d{2}|\d{6}", s):
-                return (df["date"].dt.year == d.year) & (df["date"].dt.month == d.month)
-            # Year (already handled above), fallback: match year
-            return (df["date"].dt.year == d.year)
-        except ValueError:
-            raise ValueError(f"Invalid period format: {s}")
-
-    plt.figure(figsize=(10, 5))
+    # parse requested periods (matches CLI)
+    per_list = []
     if not periods:
-        grp = df.groupby("month", as_index=False)[field].mean().sort_values("month")
-        plt.plot(grp["month"], grp[field], label="all")
+        y0, y1 = int(df["date"].dt.year.min()), int(df["date"].dt.year.max())
+        per_list = [(f"{y0}-{y1}", y0, y1)]
     else:
-        for p in periods:
-            mask = _parse_period(p)
-            sub = df.loc[mask]
-            if sub.empty:
-                continue
-            grp = sub.groupby("month", as_index=False)[field].mean().sort_values("month")
-            plt.plot(grp["month"], grp[field], label=p)
+        for tok in [p.strip() for p in periods.split(",") if p.strip()]:
+            if "-" in tok:
+                a, b = tok.split("-", 1)
+                y0, y1 = int(a[:4]), int(b[:4]); per_list.append((f"{y0}-{y1}", y0, y1))
+            else:
+                y = int(tok[:4]); per_list.append((str(y), y, y))
 
-    plt.xticks(range(1,13), ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"])
-    plt.xlabel("Month")
-    plt.ylabel(field)
-    plt.title(title)
-    plt.legend()
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(11,5))
+    for label, y0, y1 in per_list:
+        sub = df[(df["year"] >= y0) & (df["year"] <= y1)]
+        if sub.empty: continue
+        monthly = sub.groupby("month")[field].mean().reindex(range(1,13))
+        ax.plot(range(1,13), monthly.values, label=label, lw=1.6)
+
+    ax.set_xticks(range(1,13)); ax.set_xticklabels(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"])
+    ax.set_xlabel("Month"); ax.set_ylabel("SST (°C)" if field=="sst" else "SST Anomaly (°C)")
+    ax.set_title(title); ax.legend(); ax.grid(True, alpha=.3); fig.tight_layout()
 
     if outfile:
-        plt.savefig(outfile, dpi=150)
-        plt.close()
-        return outfile
-    else:
-        plt.show(block=False)
-        try:
-            fig.canvas.flush_events()
-        except Exception:
-            pass
-        return None
+        plt.savefig(outfile, dpi=150); plt.close(fig); return outfile
+    plt.show(block=False)
+    try: fig.canvas.flush_events()
+    except Exception: pass
+    return None

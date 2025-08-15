@@ -54,6 +54,8 @@ class ODBChatClient:
         self.client: Optional[Client] = None
         # Session-only history for slash-commands (e.g., "/mhw ...")
         self._cmd_history: list[str] = []
+        self._commands = {}  # name -> async handler
+        self._help = {}      # name -> help string
 
     # ----------------------
     # Connection management
@@ -553,6 +555,15 @@ class ODBChatClient:
             return input(prompt)
 
     # ----------------------
+    # Register method
+    # ----------------------
+    def register_command(self, name: str, handler, help_text: str = ""):
+        key = name.lower()
+        self._commands[key] = handler
+        if help_text:
+            self._help[key] = help_text
+
+    # ----------------------
     # Command parser
     # ----------------------
     async def _handle_command(self, line: str):
@@ -560,8 +571,32 @@ class ODBChatClient:
         cmd = parts[0].lower()
         args = parts[1:]
 
+        # command in other registered tool patch, e.g. /mhw
+        if cmd in self._commands:
+            await self._commands[cmd](self, line)
+            return
+
         if cmd == "/help":
-            print(self._help_text())
+            # support: "/help" (list) and "/help /mhw" (detail)
+            if len(parts) == 1:
+                print("Available commands:")
+                for k in sorted(self._commands.keys()):
+                    one = self._help.get(k, "").splitlines()[0] if k in self._help else ""
+                    print(f"  {k:8} {one}")
+                print('Tip: "/help /mhw" for detailed help.')
+                return
+            else:
+                target = parts[1].lower()
+                txt = self._help.get(target)
+                if txt:
+                    print(txt)
+                else:
+                    txt = self._help.get(f"/{target}")
+                    if txt:
+                        print(txt)
+                    else:
+                        print(f"No help for {target}")
+                return
         elif cmd == "/server":
             await self._cmd_server(args)
         elif cmd == "/tools":
@@ -708,9 +743,12 @@ async def main():
         sys.exit(1)
 
     try:
-        from mhw_cli_patch import install_mhw_command
-        install_mhw_command(cli)
-
+        try:
+            from mhw_cli_patch import install_mhw_command
+            install_mhw_command(cli)
+        except Exception:
+            print("Warning: cannot load MHW CLI plugin")
+            pass
         if args.status:
             await cli.check_status()
         elif args.list_tools:
