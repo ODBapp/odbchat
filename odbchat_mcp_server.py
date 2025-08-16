@@ -32,13 +32,7 @@ SUGGESTED_MODELS = [
     "gpt-oss:20b",
 ]
 
-@mcp.tool()
-async def ping() -> str:
-    "Return 'pong' to verify the MCP server is alive."
-    return "pong"
-
-@mcp.tool()
-async def chat_with_odb(
+async def chat_with_odb_impl(
     query: str,
     model: str = "gemma3:4b",
     context: Optional[str] = None,
@@ -93,8 +87,7 @@ Provide accurate, helpful responses based on your knowledge of these domains."""
         logger.error(f"Error in chat_with_odb: {e}")
         return f"Error: Unable to process request - {str(e)}"
 
-@mcp.tool()
-async def list_available_models() -> List[str]:
+async def list_available_models_impl() -> List[str]:
     """
     Return unique model names (installed + suggested). Avoids verbose reprs.
     """
@@ -118,8 +111,7 @@ async def list_available_models() -> List[str]:
         logger.error(f"Error listing models: {e}")
         return [f"Error: {str(e)}"]
 
-@mcp.tool()
-async def get_model_info(model: str) -> Dict[str, Any]:
+async def get_model_info_impl(model: str) -> Dict[str, Any]:
     """Return details for a specific model name."""
     try:
         models_response = await ollama_client.list()
@@ -148,8 +140,7 @@ async def get_model_info(model: str) -> Dict[str, Any]:
         logger.error(f"Error getting model info: {e}")
         return {'error': str(e), 'name': model}
 
-@mcp.tool()
-async def check_ollama_status() -> Dict[str, Any]:
+async def check_ollama_status_impl() -> Dict[str, Any]:
     """
     Check if Ollama service is running and accessible.
     """
@@ -180,6 +171,30 @@ async def check_ollama_status() -> Dict[str, Any]:
             "error": str(e),
             "suggestion": "Make sure Ollama is running with 'ollama serve'"
         }
+
+
+@mcp.tool()
+async def ping() -> str:
+    "Return 'pong' to verify the MCP server is alive."
+    return "pong"
+
+@mcp.tool()
+async def chat_with_odb(query: str, model: str = "gemma3:4b", context: str | None = None, temperature: float = 0.7) -> str:
+    return await chat_with_odb_impl(query, model, context, temperature)
+
+
+@mcp.tool()
+async def list_available_models() -> list[str]:
+    return await list_available_models_impl()
+    
+
+@mcp.tool()
+async def get_model_info(model: str) -> Dict[str, Any]:
+    return await get_model_info_impl(model)
+
+@mcp.tool()
+async def check_ollama_status() -> dict:
+    return await check_ollama_status_impl()
 
 @mcp.resource("odb://knowledge-base")
 async def odb_knowledge_base() -> str:
