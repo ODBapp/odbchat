@@ -5,3 +5,4 @@
 #### v0.0.5 CLI line editor: correct cursor across wrapped lines; MHW plots now non-blocking
 #### v0.1.0 CLI major refactor to move API to server-side, fix antimeridian problem in basemap/cartopy and various bugs
 #### v0.1.1 Add shared schemas for client/server MCP interface and validation/add batch fetch tool
+#### v0.1.2 Build pytest test files and env/n1
