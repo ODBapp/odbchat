@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+import os
+import sys
+import subprocess
+import tempfile
 from typing import Optional, Tuple, List
 
 import numpy as np
@@ -10,6 +14,7 @@ import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.ticker import MaxNLocator
 
 plt.rcParams["figure.raise_window"] = False
 
@@ -96,6 +101,18 @@ def _default_cmap_norm(field: str):
     if field == "td":
         return plt.get_cmap("plasma"), None, None, None
     return plt.get_cmap("viridis"), None, None, None
+
+def _nice_ticks(lo: float, hi: float, nticks: int = 5) -> np.ndarray:
+    """Return reasonably spaced numeric ticks between lo and hi.
+
+    Uses Matplotlib's MaxNLocator for consistency and then clips to [lo, hi].
+    Guarantees at least 3 ticks when possible.
+    """
+    if not (np.isfinite(lo) and np.isfinite(hi)) or hi == lo:
+        return np.array([lo])
+    locator = MaxNLocator(nbins=max(3, nticks), min_n_ticks=3)
+    ticks = locator.tick_values(lo, hi)
+    return ticks[(ticks >= min(lo, hi)) & (ticks <= max(lo, hi))]
 
 def _resolve_month_from_start(start: Optional[str], df: pd.DataFrame) -> pd.Timestamp:
     if start:
@@ -234,111 +251,57 @@ def _smart_geo_ticks(lo: float, hi: float, coord_type: str = 'lon') -> np.ndarra
     
     return ticks
 
-def _find_best_colorbar_position(ax, fig):
-    """
-    Find the best position for colorbar that doesn't overlap with ticks/labels.
-    Returns orientation and positioning parameters.
-    """
+def _choose_colorbar_layout(ax, fig, engine: str = "cartopy"):
+    """Unified colorbar layout chooser across backends.
 
-    # Get current axis position
-    pos = ax.get_position()
-    
-    # Check available space
-    right_space = 1 - pos.x1  # Space to the right
-    bottom_space = pos.y0     # Space below
-    
-    # Prefer horizontal colorbar if there's enough space below
-    # and the plot is wide enough
+    Returns a tuple of (orientation, params_dict).
+    Falls back to using only figure aspect when ax is None (pre-sizing cases).
+    """
     fig_w, fig_h = fig.get_size_inches()
-    aspect_ratio = fig_w / fig_h
-    
+    aspect_ratio = fig_w / max(fig_h, 1e-9)
+    bottom_space = 0.2
+    right_space = 0.2
+    if ax is not None:
+        pos = ax.get_position()
+        bottom_space = float(pos.y0)
+        right_space = float(1 - pos.x1)
+
+    # Defaults tuned to be close across engines
+    horiz = {"pad": 0.12, "fraction": 0.065, "aspect": 28}
+    vert = {"pad": 0.08, "fraction": 0.06, "aspect": 20}
+
+    # Minor engine-specific nudges (keep a single function API)
+    if engine == "basemap":
+        horiz = {"pad": 0.12, "fraction": 0.07, "aspect": 30}
+    elif engine == "plain":
+        horiz = {"pad": 0.12, "fraction": 0.07, "aspect": 28}
+
     if bottom_space > 0.15 and aspect_ratio > 1.5:
-        return "horizontal", {"pad": 0.12, "fraction": 0.06, "aspect": 30}
-    elif right_space > 0.12:
-        return "vertical", {"pad": 0.08, "fraction": 0.06, "aspect": 20}
-    else:
-        # Fallback to horizontal with adjusted spacing
-        return "horizontal", {"pad": 0.15, "fraction": 0.07, "aspect": 25}
+        return "horizontal", horiz
+    if right_space > 0.12:
+        return "vertical", vert
+    return "horizontal", {"pad": 0.15, "fraction": horiz.get("fraction", 0.065), "aspect": horiz.get("aspect", 28)}
 
-def _find_best_legend_position_cartopy(ax, fig, is_level: bool = False):
-    """
-    Find the best position for legend in cartopy plots.
-    """
+def _choose_legend_layout(ax, fig, engine: str = "cartopy", is_level: bool = False):
+    """Unified legend layout chooser.
 
-    pos = ax.get_position()
-    bottom_space = pos.y0
-    right_space = 1 - pos.x1
-    
-    if is_level:
-        # For discrete level legend
-        if bottom_space > 0.18:
-            return (0.5, -0.14), "upper center", 4  # ncol=4
-        elif right_space > 0.15:
-            return (1.02, 0.5), "center left", 1   # ncol=1
-        else:
-            return (0.5, -0.18), "upper center", 4  # ncol=4, more space
-    
-    return None, None, None
+    Returns (bbox_to_anchor, loc, ncol) where ncol applies to level legends.
+    Only supports level legends currently; returns (None, None, None) for others.
+    """
+    if not is_level:
+        return None, None, None
 
-def _find_best_colorbar_position_basemap(ax, fig):
-    """
-    Find the best position for colorbar in basemap plots.
-    """
+    pos = ax.get_position() if ax is not None else None
+    bottom_space = float(pos.y0) if pos is not None else 0.2
+    right_space = float(1 - pos.x1) if pos is not None else 0.2
 
-    pos = ax.get_position()
-    bottom_space = pos.y0
-    right_space = 1 - pos.x1
-    fig_w, fig_h = fig.get_size_inches()
-    aspect_ratio = fig_w / fig_h
-    
-    # For basemap, prefer horizontal colorbar for wide plots
-    if bottom_space > 0.15 and aspect_ratio > 1.5:
-        return "horizontal", {"pad": 0.12, "fraction": 0.07, "aspect": 30}
-    elif right_space > 0.12:
-        return "vertical", {"pad": 0.08, "fraction": 0.06, "aspect": 20}
-    else:
-        return "horizontal", {"pad": 0.15, "fraction": 0.08, "aspect": 25}
-
-def _find_best_legend_position_basemap(ax, fig, is_level: bool = False):
-    """
-    Find the best position for legend in basemap plots.
-    """
-    pos = ax.get_position()
-    bottom_space = pos.y0
-    right_space = 1 - pos.x1
-    
-    if is_level:
-        if bottom_space > 0.18:
-            return (0.5, -0.14), "upper center", 4
-        elif right_space > 0.15:
-            return (1.02, 0.5), "center left", 1
-        else:
-            return (0.5, -0.18), "upper center", 4
-    
-    return None, None, None
-
-def _find_best_legend_position(ax, is_level: bool = False):
-    """
-    Find the best position for legend that doesn't overlap with ticks/labels.
-    Returns (bbox_to_anchor, loc) tuple.
-    """
-    # Get current axis limits and position
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    pos = ax.get_position()
-    
-    # Check if there's space below the plot
-    bottom_space = pos.y0  # Space below the axes
-    
-    if is_level:
-        # For discrete level legend (horizontal layout)
-        if bottom_space > 0.15:  # Enough space below
-            return (0.5, -0.12), "upper center"
-        else:  # Place outside right side
-            return (1.02, 0.5), "center left"
-    else:
-        # For colorbar, we'll handle this separately
-        return None, None
+    # Keep consistent behavior across engines, with shared thresholds
+    if bottom_space > 0.18:
+        return (0.5, -0.14), "upper center", 4
+    if right_space > 0.15:
+        return (1.02, 0.5), "center left", 1
+    # Fallback: below with a bit more space
+    return (0.5, -0.18), "upper center", 4
 
 # ------------------------------------------------------------
 # Public API (original signature preserved)
@@ -394,6 +357,9 @@ def plot_map(
         cmap_use = LEVEL_CMAP
         vkw = {}
 
+    # Optional detach: if set, child process will display and block in child
+    DETACH = os.environ.get("ODBCHAT_PLOT_DETACH", "0") == "1"
+
     # ---------------- CARTOPY ----------------
     if backend == "cartopy":
         import cartopy.crs as ccrs
@@ -409,8 +375,10 @@ def plot_map(
         fig_width = 10
         fig_height = 4.6
         if not is_level:
-            # Add space for colorbar
-            orientation, cbar_params = _find_best_colorbar_position(None, plt.figure(figsize=(fig_width, fig_height)))
+            # Add space for colorbar (estimate using figure-only heuristic)
+            temp_fig = plt.figure(figsize=(fig_width, fig_height))
+            orientation, _ = _choose_colorbar_layout(ax=None, fig=temp_fig, engine="cartopy")
+            plt.close(temp_fig)
             if orientation == "vertical":
                 fig_width += 1.2
 
@@ -450,7 +418,7 @@ def plot_map(
             import matplotlib.patches as mpatches
             patches = [mpatches.Patch(color=LEVEL_COLORS[i], label=labels[i]) for i in range(4)]
             
-            bbox_anchor, loc, ncol = _find_best_legend_position_cartopy(ax, fig, is_level=True)
+            bbox_anchor, loc, ncol = _choose_legend_layout(ax, fig, engine="cartopy", is_level=True)
             
             legend = ax.legend(handles=patches, loc=loc, bbox_to_anchor=bbox_anchor,
                     ncol=ncol, frameon=False, fontsize=(10 if fig_w >= 7.5 else 9),
@@ -473,7 +441,7 @@ def plot_map(
             ax.coastlines(resolution="110m", linewidth=0.7, zorder=4)
 
             # Enhanced colorbar with triangular ends
-            orientation, cbar_params = _find_best_colorbar_position(ax, fig)
+            orientation, cbar_params = _choose_colorbar_layout(ax, fig, engine="cartopy")
             
             # Create colorbar with triangular end-style (extend='both' for triangular ends)
             if im is not None:
@@ -546,13 +514,17 @@ def plot_map(
             plt.savefig(outfile, dpi=150, bbox_inches='tight')
             plt.close(fig)
             return outfile
-        
+        if DETACH:
+            _spawn_detached_viewer(fig, f"{field} — {month_ts.strftime('%Y-%m')}")
+            plt.close(fig)
+            return None
+
         plt.show(block=False)
         try:
             fig.canvas.flush_events()
         except Exception:
             pass
-        return None  
+        return None
 
     # ---------------- BASEMAP ----------------
     if backend == "basemap":
@@ -565,7 +537,7 @@ def plot_map(
             # Check if we need extra space for vertical colorbar
             temp_fig = plt.figure(figsize=(fig_width, fig_height))
             temp_ax = temp_fig.gca()
-            orientation, _ = _find_best_colorbar_position_basemap(temp_ax, temp_fig)
+            orientation, _ = _choose_colorbar_layout(temp_ax, temp_fig, engine="basemap")
             plt.close(temp_fig)
             if orientation == "vertical":
                 fig_width += 1.2
@@ -592,7 +564,7 @@ def plot_map(
             import matplotlib.patches as mpatches
             patches = [mpatches.Patch(color=LEVEL_COLORS[i], label=labels[i]) for i in range(4)]
             
-            bbox_anchor, loc, ncol = _find_best_legend_position_basemap(ax, fig, is_level=True)
+            bbox_anchor, loc, ncol = _choose_legend_layout(ax, fig, engine="basemap", is_level=True)
             
             legend = ax.legend(handles=patches, loc=loc, bbox_to_anchor=bbox_anchor,
                       ncol=ncol, frameon=False, fontsize=(10 if fig_w >= 7.5 else 9),
@@ -616,7 +588,7 @@ def plot_map(
                        latlon=True, extend="both")
             
             # Enhanced colorbar with better positioning and triangular ends
-            orientation, cbar_params = _find_best_colorbar_position_basemap(ax, fig)
+            orientation, cbar_params = _choose_colorbar_layout(ax, fig, engine="basemap")
             
             # The triangular ends are already handled by extend="both" in contourf
             cbar = plt.colorbar(cs, orientation=orientation, **cbar_params)
@@ -672,7 +644,11 @@ def plot_map(
             plt.savefig(outfile, dpi=150, bbox_inches='tight')
             plt.close(fig)
             return outfile
-        
+        if DETACH:
+            _spawn_detached_viewer(fig, f"{field} — {month_ts.strftime('%Y-%m')}")
+            plt.close(fig)
+            return None
+
         plt.show(block=False)
         try:
             fig.canvas.flush_events()
@@ -739,18 +715,18 @@ def plot_map(
         # Discrete level legend
         fig_w = fig.get_size_inches()[0]
         labels = LEVEL_LABELS_LONG if fig_w >= 7.5 else LEVEL_LABELS_SHORT
-        
+
         import matplotlib.patches as mpatches
         patches = [mpatches.Patch(color=LEVEL_COLORS[i], label=labels[i]) for i in range(4)]
-        
-        # Find best position for legend
-        bbox_anchor, loc = _find_best_legend_position(ax, is_level=True)
-        
+
+        # Find best position for legend via unified helper
+        bbox_anchor, loc, ncol = _choose_legend_layout(ax, fig, engine="plain", is_level=True)
+
         legend = ax.legend(handles=patches, loc=loc, bbox_to_anchor=bbox_anchor,
-                  ncol=4 if loc == "upper center" else 1, 
+                  ncol=ncol if ncol else 1,
                   frameon=False, fontsize=(10 if fig_w >= 7.5 else 9),
                   handlelength=1.6, columnspacing=0.8, labelspacing=0.6)
-        
+
         # Adjust layout based on legend position
         if loc == "upper center":
             plt.subplots_adjust(bottom=0.25)
@@ -776,5 +752,42 @@ def plot_map(
     if not is_level:
         plt.tight_layout()
     else:
-        plt.tight_layout(rect=[0, 0.05 if loc == "upper center" else 0, 
+        plt.tight_layout(rect=[0, 0.05 if loc == "upper center" else 0,
                               0.85 if loc == "center left" else 1, 1])
+
+    if outfile:
+        plt.savefig(outfile, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        return outfile
+
+    if DETACH:
+        _spawn_detached_viewer(fig, f"{field} — {month_ts.strftime('%Y-%m')} (no coastline)")
+        plt.close(fig)
+        return None
+
+    plt.show(block=False)
+    try:
+        fig.canvas.flush_events()
+    except Exception:
+        pass
+    return None
+
+def _spawn_detached_viewer(fig: plt.Figure, title: str) -> None:
+    """Save figure to a temp PNG and spawn a child Python to display it.
+
+    Keeps plot windows alive independently of the parent CLI process.
+    """
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            path = tmp.name
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        code = (
+            "import sys, matplotlib.pyplot as plt, matplotlib.image as mpimg;"
+            "img = mpimg.imread(sys.argv[1]);"
+            "plt.figure(); plt.imshow(img); plt.axis('off');"
+            "plt.title(sys.argv[2]); plt.show()"
+        )
+        subprocess.Popen([sys.executable, "-c", code, path, title], close_fds=True)
+    except Exception:
+        # Swallow errors to avoid impacting CLI responsiveness
+        pass

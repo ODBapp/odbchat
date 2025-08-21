@@ -316,12 +316,20 @@ class ODBChatClient:
             old_settings = termios.tcgetattr(fd)
 
             # Optional: GUI tick (only if matplotlib is importable and figures exist)
+            # More robust against transient window-close states.
             def _gui_tick():
                 try:
-                    import matplotlib.pyplot as _plt  # local import to avoid hard dependency
-                    if _plt.get_fignums():
-                        _plt.pause(0.01)
+                    import matplotlib  # type: ignore
+                    managers = list(getattr(matplotlib._pylab_helpers.Gcf, "get_all_fig_managers")() or [])
+                    for m in managers:
+                        try:
+                            if getattr(m, "canvas", None) is not None:
+                                m.canvas.flush_events()
+                        except Exception:
+                            # Window might be closing; ignore to keep CLI responsive
+                            pass
                 except Exception:
+                    # matplotlib not available or backend quirks – ignore
                     pass
 
             # ---- display-width helper (handles emoji, CJK, combining marks) ----
