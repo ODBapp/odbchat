@@ -1,5 +1,5 @@
 Metadata-Version: 2.4
 Name: odbchat
-Version: 0.0.1
+Version: 0.1.2
 Summary: ODB chat with FastMCP + Ollama
 Requires-Python: >=3.9

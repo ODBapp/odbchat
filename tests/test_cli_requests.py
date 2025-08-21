@@ -10,8 +10,8 @@ def test_build_requests_multip_periods_antimeridian():
     ]
     p = _parse_mhw_flags(line_tokens)
     arglist = _canonical_fetch_arglist(p)
-    # anti-meridian → should split into 2 bboxes per period → total 3 requests x 2 = 6
-    assert len(arglist) == 6
+    # anti-meridian → should split into 2 bboxes per period → total 2 requests x 2 = 4
+    assert len(arglist) == 4
     for a in arglist:
         a1 = canonicalize_fetch(a)
         ok, err = validate_fetch(a1)

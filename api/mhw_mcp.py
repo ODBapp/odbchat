@@ -86,8 +86,8 @@ async def _mhw_fetch_impl(
     if not ok:
         return {"error": f"invalid mhw_fetch args: {err}"}
     
-        fields_csv = _normalize_fields(append)
-        fields = [f.strip() for f in fields_csv.split(",")]
+    fields_csv = _normalize_fields(append)
+    fields = [f.strip() for f in fields_csv.split(",")]
 
     url = MHW_API_CSV if output.lower() == "csv" else MHW_API_JSON
     params = { #: Dict[str, Any]

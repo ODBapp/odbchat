@@ -25,6 +25,7 @@ MHW_HELP = (
 )
 
 ALLOWED_FIELDS = {"sst", "sst_anomaly", "level", "td"}
+bboxMode = "none"
 
 # ------------------------------ utils ------------------------------
 
@@ -68,12 +69,7 @@ def _records_to_df(rows: List[Dict[str, Any]]) -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"])
     return df
 
-def _delta_lon_shortest(l0: float, l1: float) -> float:
-    d = ((l1 - l0 + 180.0) % 360.0) - 180.0
-    return abs(d)
-
 # ------------------------------ periods & bbox ------------------------------
-
 def _parse_periods_csv(csv: Optional[str], default_start: Optional[str], default_end: Optional[str]) -> List[Tuple[str, str, str]]:
     out: List[Tuple[str, str, str]] = []
     if csv and csv.strip():
@@ -96,17 +92,45 @@ def _parse_periods_csv(csv: Optional[str], default_start: Optional[str], default
         out.append((s, e, f"{s[:7]}–{e[:7]}"))
     return out
 
-def _split_bbox_by_180(lon0: float, lat0: float, lon1: Optional[float], lat1: Optional[float]) -> List[Tuple[float, float, Optional[float], Optional[float]]]:
+def _bbox_mode(lon0: float, lon1: float) -> str:
+    """
+    Return 'crossing-zero' | 'antimeridian' | 'none'. Inputs in [-180,180].
+    """
+    if lon0 is None or lon1 is None:
+        return "none"
+    if abs(lon0 - lon1) > 180.0:
+        return "antimeridian"
+    if (lon0 < 0 < lon1) or (lon1 < 0 < lon0):
+        return "crossing-zero"
+    return "none"
+
+def _split_bbox_by_crossing(lon0: float, lat0: float, lon1: Optional[float], lat1: Optional[float]) -> List[Tuple[float, float, Optional[float], Optional[float]]]:
+    """
+    Split bbox into at most two continuous lon ranges:
+    - If |lon0 - lon1| > 180  → anti-meridian split at ±180
+    - Else if signs differ    → zero-crossing split at 0
+    - Else                    → no split
+    Note: Inputs are expected within [-180, 180].
+    """
+
+    print("check input: ", lon0, lat0, lon1, lat1)
     if lon1 is None or lat1 is None:
         return [(lon0, lat0, None, None)]
-    if _delta_lon_shortest(lon0, lon1) <= 180.0:
-        return [(lon0, lat0, lon1, lat1)]
-    # split into two continuous boxes
+
     eps = 1e-3
-    return [(lon0, lat0, 180.0 - eps, lat1), (-180.0 + eps, lat0, lon1, lat1)]
+    if abs(lon0 - lon1) > 180.0:
+        # 1) anti-meridian split
+        return [(lon0, lat0, 180.0 - eps, lat1), (-180.0 + eps, lat0, lon1, lat1)]
+
+    # 2) Cross zero-longitude split (e.g., -30 → 150 or 150 → -30)
+    if (lon0 < 0 < lon1) or (lon1 < 0 < lon0):
+        lo = min(lon0, lon1)
+        hi = max(lon0, lon1)
+        return [(lo, lat0, -eps, lat1), (eps, lat0, hi, lat1)]
+
+    return [(lon0, lat0, lon1, lat1)]
 
 # ------------------------------ plugin loading ------------------------------
-
 def _load_symbol(module_names: List[str], file_candidates: List[str], symbol: str):
     for m in module_names:
         try:
@@ -243,14 +267,16 @@ def _parse_mhw_flags(tokens: List[str]) -> Dict[str, Any]:
     return p
 
 def _canonical_fetch_arglist(p: Dict[str, Any]) -> List[Dict[str, Any]]:
+    global bboxMode
     lon0, lat0, lon1, lat1 = p.get("lon0"), p.get("lat0"), p.get("lon1"), p.get("lat1")
     if lon0 is None or lat0 is None:
         lon0, lat0, lon1, lat1 = 118.0, 21.0, 123.0, 26.0  # Taiwan default
 
     periods = _parse_periods_csv(p.get("_periods"), p.get("start"), p.get("end"))
-    bbox_parts = _split_bbox_by_180(float(lon0), float(lat0),
-                                    None if lon1 is None else float(lon1),
-                                    None if lat1 is None else float(lat1))
+    bboxMode = _bbox_mode(float(lon0), None if lon1 is None else float(lon1))
+    bbox_parts = _split_bbox_by_crossing(float(lon0), float(lat0),
+                                         None if lon1 is None else float(lon1),
+                                         None if lat1 is None else float(lat1))
 
     fields = p.get("_fields") or "sst,sst_anomaly"
     outmode = "csv" if p.get("_csv") else "json"
@@ -375,7 +401,7 @@ async def handle_mhw(cli, line: str):
     ok, err = validate_plot(plot_cfg)
     if not ok:
         print(f"❌ invalid plot config: {err}", file=sys.stderr)
-        return    
+        return
 
     if mode == "series":
         fields = [f.strip() for f in (p.get("_plot_field") or arglist[0]["append"]).split(",") if f.strip() in ALLOWED_FIELDS]
@@ -393,7 +419,7 @@ async def handle_mhw(cli, line: str):
         first = arglist[0]
         bbox = (first["lon0"], first["lat0"], first.get("lon1"), first.get("lat1"))
         start_for_map = first["start"]
-        _plot_map(big, field=fld, bbox=bbox, start=start_for_map,
+        _plot_map(big, field=fld, bbox=bbox, start=start_for_map, bbox_mode=bboxMode,
                   outfile=p.get("_outfile"), method=p.get("_map_method"),
                   cmap=p.get("_cmap"), vmin=p.get("_vmin"), vmax=p.get("_vmax"))
         return
