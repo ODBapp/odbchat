@@ -1,0 +1,13 @@
+dataset: marineheatwave
+description: Marine heatwaves (MHWs) data and API evaluated from 0.25-degree gridded NOAA OISST v2.1, compiled by Ocean Data Bank (ODB), Taiwan.
+tags: [SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, global, 全球海洋熱浪]
+type: manifest (top-level)
+components:
+  - path: data_summaries/mhw_zarr_metadata.yml
+    type: Zarr (v2) metadata
+    format: YAML
+    manifest: manifests/mhw_zarr_manifest.yml
+  - path: manuals/odb_mhw_openapi.json
+    type: OpenAPI Specification
+    format: JSON
+    manifest: manifests/mhw_openapi_manifest.yml

@@ -1,0 +1,45 @@
+---
+dataset: marineheatwave
+collection: mhw
+doc_type: web_article
+title: 聖嬰現象(ENSO): 什麼是ENSO? (TW)
+lang: zh_TW
+issuer: "中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan"
+canonical_url: "https://www.cwa.gov.tw/V8/C/C/Knowledge/knowledge_4-1.html"
+license: "Unknown"
+retrieved_at: "2025-08-25T10:00:00Z"
+doc_id: "sha1:04d301444644a23399d005a116fe564d2c6ce0dd" 
+tags: [ENSO, "El Niño", "La Niña", "Oceanic Niño Index", "SST anomalies", "聖嬰現象", "反聖嬰", basics]
+related_to:
+  - doc_id: "sha1:c5edba53a128c7540e3d50c139d83d86b8a34087"
+  - collection: "mhw"
+depends_on:
+  - manuals/odb_mhw_openapi.json
+source_file: "web_docs/md/ENSO_CWA_html_zh.md"
+source_type: web
+version: v1
+content: |
+  **聖嬰現象(ENSO): 什麼是ENSO??**
+  
+  [HTML source from 中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan](https://www.cwa.gov.tw/V8/C/C/Knowledge/knowledge_4-1.html)
+  
+  每年耶誕節前後，祕魯西岸的東太平洋都會出現一股由北向南的暖海流，漁獲量也會隨之減少，當地漁民都利用這個空檔修理保養漁船漁具，並將這股大約在耶誕節準時報到的暖洋流，取了個名字「El Niño」。El Niño 在西班牙文中有「幼年基督」和「男孩」的雙重意義，我們把它翻譯成**聖嬰現象**。<sup>註1</sup>
+  
+  科學家原本以為聖嬰現象只是發生於南美洲太平洋沿岸的區域現象，直到 1960 年代，海洋學家觀測1957-58年聖嬰現象，發現異常增溫的海水由東太平洋往西太平洋綿延數千公里，才瞭解聖嬰現象的影響範圍遍及整個赤道太平洋（圖1a）。約在此同時氣象學家驚覺到，聖嬰現象與大氣中的南方振盪(Southern Oscillation)在時間變化上有高度的相似性。南方振盪代表熱帶東太平洋和西太平洋之間的氣壓差異變化，說明聖嬰不只是海溫變化的獨角戲，更會影響到許多地區的天氣與氣候。於是科學家借用秘魯等地漁民的說法，把這種**每隔數年（2-7年）發生在赤道東太平洋海水異常增溫、影響全球氣候的現象，通稱為「聖嬰」**。由於聖嬰同時存在海洋與大氣之中，科學家另給它一個較長的全名，**El Niño Southern Oscillation**，一般簡稱為ENSO。
+  
+  赤道東太平洋海溫除了會異常變暖，有時候也會變得很冷(圖1b)，對全球氣候的影響亦差不多與聖嬰現象相反。這一個赤道東太平洋海溫異常偏冷的現象也被科學家取一個擬人化的名字，La Niña，也就是西班牙文中「女孩」的意思，當然您可以叫她女嬰，不過我們習慣稱她**「反聖嬰」**現象。
+  
+  為監測聖嬰現象，科學家發明了許多指標，其中最常用的是ONI <sup>註2</sup>。聖嬰現象的發展一般約由春末至初夏開始，秋冬季緩步加強，多數在隆冬達到高峰，最後約於隔一年春季逐漸減弱，但聖嬰個案之間還是有許多的差異(圖2)。
+  
+  聖嬰與反聖嬰並非完全反對稱，兩者最大的不同在於聖嬰海溫異常的程度較大；其次，強聖嬰個案最大海溫異常海域位於赤道東太平洋(圖1a)，但強反聖嬰個案最強冷海溫異常則是接近赤道中太平洋(圖1b)；再者，反聖嬰持續時間較聖嬰長，有時甚至長達2、3年(圖2)。
+  
+  詳細聖嬰事件的分析和預報可參考本署於每月月中發布的[氣候監測報告](https://www.cwa.gov.tw/V8/C/C/Watch/watch_1.html "連結至氣候監測報告頁面")及[聖嬰展望](https://www.cwa.gov.tw/Data/fcst_pdf/enso_outlook.pdf "連結至聖嬰展望頁面")
+  
+  #### 註
+  
+  -   註1：此兩段文字，主要摘自「許晃雄，1998: 聖嬰與反聖嬰現象。環境保護署，24頁」。
+  -   註2：Oceanic Niño Index, ONI，為3個月滑動平均的Niño 3.4(赤道中太平洋海域\[5°N-5°S, 120°-170°W\]海溫異常值)，異常值為實際值減去平均值。
+  
+  ![20世紀超級聖嬰的海平面溫度距平](https://www.cwa.gov.tw/V8/C/C/img/ENSO/2_1_1.png)
+  
+  ![1951年至2014年所有聖嬰(紅色線)與反聖嬰(藍色線)事件](https://www.cwa.gov.tw/V8/C/C/img/ENSO/2_1_2.png)

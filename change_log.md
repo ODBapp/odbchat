@@ -9,3 +9,4 @@
 #### v0.1.3 Big refactor cli/plugins/map_plot.py for basemap/cartopy/plain crossing-zero, antimeridian cases
 #### v0.1.4 Simplify map_plot backend helpers: unify legend/colorbar placement into reusable functions; add _nice_ticks; no behavior change intended
 #### v0.1.5 CLI GUI stability: harden matplotlib GUI tick to avoid stalls when closing one of multiple windows; add optional detached plotting via ODBCHAT_PLOT_DETACH=1 so plot windows live independently of the CLI
+#### v0.1.6 Start switching to llama.cpp/build/set-up RAG docs/n1

@@ -1,0 +1,150 @@
+ODB 提供全球 0.25° x 0.25° 每月的海表平均溫度、海表溫度距平值、海洋熱浪級數與海洋熱浪引起的熱位移 (Thermal displacement) 之資料下載。
+
+## About
+
+## Method
+
+### ODB 海洋熱浪計算方法與定義
+
+### Step A
+
+使用 NOAA OISST 0.25° x 0.25° 的 v2.1 資料集，計算 1982 至今每月平均 SST。
+
+### Step B
+
+計算每月 SST 距平值\*：  
+每月平均 SST (Step A) - 各月 SST 長期平均值 (1982-2011)。  
+\*該結果沒有去除趨勢。
+
+### Step C
+
+將計算出的距平值，根據 Step C-1 的方法定義海洋熱浪門檻值。
+
+### Step C-1
+
+每月 SST 距平值（算法如 Step B）至少高於季節背景值\*的第 90 個百分位數。  
+\*季節背景值：將計算月份的前後一個月納入當作背景值，例如定義 2 月份海洋熱浪的門檻值，即為綜合過去 1982-2011 年中 1、2、3 月全部每月 SST 距平值的第 90 個百分位數。([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))
+
+### Step D
+
+比較 Step B 與 Step C 即得知海洋熱浪發生與否及 SST 距平值。  
+若有熱浪，找出海洋熱浪引起的熱位移\*。  
+\*熱位移就是在海洋熱浪的影響下，為了追隨長期平均海表溫度所需移動的最小距離 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))。 計算熱位移時考慮生物移動的合理性 (例如無法穿越陸地等) ，將全球海洋分區，並限制可移動的區域 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))，詳細計算方法請參考 Github 連結。
+
+### Results
+
+### Reference List
+
+Di Lorenzo, E., &Mantua, N. (2016). Multi-year persistence of the 2014/15 North Pacific marine heatwave. Nature Climate Change , 6(11), 1042–1047. [doi: 10.1038/nclimate3082](http://dx.doi.org/10.1038/nclimate3082)
+
+Frölicher, T. L., Fischer, E. M., &Gruber, N. (2018). Marine heatwaves under global warming. Nature, 560(7718), 360–364. [doi: 10.1038/s41586-018-0383-9](https://doi.org/10.1038/s41586-018-0383-9)
+
+Hobday, A. J., Alexander, L.V., Perkins, S. E., Smale, D. A., Straub, S. C., Oliver, E. C. J., Benthuysen, J. A., Burrows, M. T., Donat, M. G., Feng, M., Holbrook, N. J., Moore, P. J., Scannell, H. A., SenGupta, A., &Wernberg, T. (2016). A hierarchical approach to defining marine heatwaves. Progress in Oceanography, 141, 227–238. [doi: 10.1016/j.pocean.2015.12.014](https://doi.org/10.1016/j.pocean.2015.12.014)
+
+Hobday, A. J., Oliver, E. C. J., Gupta, A.Sen, Benthuysen, J. A., Burrows, M. T., Donat, M. G., Holbrook, N. J., Moore, P. J., Thomsen, M. S., Wernberg, T., &Smale, D. A. (2018). Categorizing and naming marine heatwaves. Oceanography, 31(2), 162–173. [doi: 10.5670/oceanog.2018.205](https://doi.org/10.5670/oceanog.2018.205)
+
+Huang, B., C. Liu, V. Banzon, E. Freeman, G. Graham, B. Hankins, T. Smith, and H.-M. Zhang, 2020: Improvements of the Daily Optimum Interpolation Sea Surface Temperature (DOISST) Version 2.1, Journal of Climate, 34, 2923-2939. [doi: 10.1175/JCLI-D-20-0166.1](https://doi.org/10.1175/JCLI-D-20-0166.1)
+
+IPCC, 2022: Climate Change 2022: Impacts, Adaptation and Vulnerability. Contribution of Working Group II to the Sixth Assessment Report of the Intergovernmental Panel on Climate Change \[H.-O. Pörtner, D.C. Roberts, M. Tignor, E.S. Poloczanska, K. Mintenbeck, A. Alegría, M. Craig, S. Langsdorf, S. Löschke, V. Möller, A. Okem, B. Rama (eds.)\]. Cambridge University Press. Cambridge University Press, Cambridge, UK and New York, NY, USA, 3056 pp. [doi:10.1017/9781009325844](https://doi.org/10.1017/9781009325844)
+
+Jacox, M., Alexander, M., Bograd, S., &Scott, J. (2020). Thermal displacement by marine heatwaves. Nature., 584, 82-86. [doi: 10.1038/s41586-020-2534-z](https://doi.org/10.1038/s41586-020-2534-z)
+
+Oliver, E. C. J., Donat, M. G., Burrows, M. T., Moore, P. J., Smale, D. A., Alexander, L.V., Benthuysen, J. A., Feng, M., SenGupta, A., Hobday, A. J., Holbrook, N. J., Perkins-Kirkpatrick, S. E., Scannell, H. A., Straub, S. C., &Wernberg, T. (2018). Longer and more frequent marine heatwaves over the past century. Nature Communications, 9(1), 1–12. [doi: 10.1038/s41467-018-03732-9](https://doi.org/10.1038/s41467-018-03732-9)
+
+Pearce, A., Lenanton, R., Jackson, G., Moore, J., Feng, M., &Gaughan, D. (2011). The “marine heat wave” off Western Australia during the summer of 2010/11. Fisheries Research Report No. 222. Department of Fisheries, Western Australia. 40pp.
+
+## Download
+
+注意事項
+
+-   下載之檔案為 .csv
+-   資料輸入欄位：
+    -   經度範圍：-180° ~ 180°
+    -   緯度範圍：-90° ~ 90°
+    -   時間範圍：1982-Jan-01 ~ 上個月
+-   資料輸出欄位：
+    -   lon（經度）
+    -   lat（緯度）
+    -   date（日期，yyyy-mm-dd，ex. 2023-06-01 等同 2023 六月份資料）
+    -   sst（每月海表平均溫度，單位 °C，空白代表 NaN）
+    -   sst\_anomaly（每月海表溫度距平值，單位 °C，空白代表 NaN）
+    -   level（每月海洋熱浪級數，-1 代表當月為海冰，0~4 代表海洋熱浪分級程度）
+    -   td（每月熱位移，km，空白代表 NaN）
+-   下載單點資料，無時間限制，請輸入起始經度、起始緯度和時間區段。
+-   下載區域資料，若區域範圍 ≤ 10° x 10°，時間區段最長可達十年，請輸入經度、緯度範圍和時間區段。
+-   下載區域資料，若區域範圍 > 10° x 10°，時間區段最長只能一年，請輸入經度、緯度範圍和時間區段。
+-   下載區域資料，若區域範圍 > 90° x 90°，時間區段最長只能一個月，請輸入經度、緯度範圍和時間區段。
+-   若您使用 ODB 提供的資料，引用格式如: Ocean Data Bank, National Science and Technology Council, Taiwan. https://doi.org/10.5281/zenodo.7512112. Accessed DAY/MONTH/YEAR from www.odb.ntu.edu.tw.
+
+選擇下載資料（可多選）
+
+Monthly mean SST（每月海表平均溫度） Monthly SST Anomalies（每月海表溫度距平值） Monthly MHW levels（每月海洋熱浪級數） Themal Displacements（每月熱位移）
+
+#從我們的 API 連接到您的軟體  
+#lon0 與 lat0 為必要參數  
+#單點查詢並無時間限制 e.g. /api/mhw/csv?lon0=135&lat0=15 (可得 1982 年到最新的資料)  
+#若區域範圍 ≤ 10° x 10°，時間區段最長可達十年 e.g. /api/mhw/csv?lon0=135&lon1=140&lat0=15&lat1=30&start=2013-01-01 (可得 2013/01/01-2022/12/01 時間段的資料)  
+#若區域範圍 > 10° x 10°，時間區段最長只能一年 e.g. /api/mhw/csv?lon0=135&lon1=150&lat0=15&lat1=30&start=2013-01-01 (可得 2013/01/01-2013/12/01 時間段的資料)  
+#若區域範圍 > 90° x 90°，時間區段最長只能一個月，請輸入經度、緯度範圍和時間區段 e.g. /api/mhw/csv?lon0=-180&lon1=180&lat0=-90&lat1=90&start=2013-01-01 (可得 2013/01/01 的資料)
+
+#API 請求範例  
+https://eco.odb.ntu.edu.tw/api/mhw/csv?lon0=121&lat0=25.6&lon1=121.7&lat1=25.6&start=2023-04-01&end=2023-07-01&append=sst,sst\_anomaly,level,td 
+
+#輸出範例
+
+lon,lat,date,level,sst,sst\_anomaly,td
+
+120.875,25.375,2023-04-01,0,22.426334,0.6179904937744141,
+
+120.875,25.375,2023-05-01,0,25.035807,0.5337085723876953,
+
+120.875,25.375,2023-06-01,1,27.591667,1.1035003662109375,141.22131
+
+120.875,25.375,2023-07-01,1,28.8, 1.2374820709228516,57.366695
+
+![hidy](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidy_mhw.svg)
+
+## Hidy Viewer
+
+### 以下說明如何在 Hidy Viewer 查詢海洋熱浪資料
+
+![Hidy Viewer 選擇海洋熱浪資料示意圖](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidystep1.png)
+
+-   Hidy Viewer：[前往 Hidy Viewer](https://odbview.oc.ntu.edu.tw/hidy/)
+-   於左側目錄選擇 ODB 資料 -> 海洋熱浪
+-   在此圖台提供兩種資料圖層：
+    -   海洋熱浪級數（預設）
+    -   海表溫度距平值
+-   選擇資料圖層，即可顯示對應月份的空間分布。
+
+![Hidy Viewer 時間選擇示意圖](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidystep2.png)
+
+-   在圖台點擊時間選擇框，開啟日曆調整時間。
+-   ODB 海洋熱浪的資料時間尺度為「月」，因此選擇哪一天皆無影響，系統會自動對應到當月的資料。
+-   資料更新規則：
+    -   每月 18 日更新，最新資料僅到「前一個月」。
+    -   例如：
+        -   3 月 10 日：僅能查詢到 1 月的最新資料。
+        -   3 月 20 日：可查詢到 2 月最新資料。
+
+![Hidy Viewer 時間序列示意圖](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidystep3.png)
+
+-   除了預設的空間展示之外，也可以同時選擇時間序列展示。
+-   勾選「時間序列圖」選項後，系統將顯示所選地點的海表溫度距平值時序圖。
+-   在地圖上點擊想查看的地點（點擊後會有白點標示）。
+-   預設顯示最近兩年的時間序列資料，可調整起始與結束年份。
+
+![Hidy Viewer 時間序列示意圖](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidystep4.png)
+
+-   X 軸：時間
+-   Y 軸：海表溫度距平值
+-   圓圈顏色：對應海洋熱浪級數
+-   更多功能：
+    -   開啟「時間序列圖」選單後，可勾選比較區域。
+    -   輸入比較區域的經緯度範圍，即會顯示：
+        -   藍框範圍內的平均值（時間序列藍線）。
+        -   白點代表的單點數值。
+    -   可下載 CSV 格式 的藍線數據或單點數據。
+-   比較區域限制：
+    -   空間範圍：最大 10° x 10°（若超過會有錯誤訊息）。
+    -   時間範圍：最長 10 年。

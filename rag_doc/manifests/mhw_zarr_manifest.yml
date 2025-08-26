@@ -1,0 +1,12 @@
+---
+source_file: data_summaries/mhw_zarr_metadata.yml
+document_type: data_summary
+dataset_name: marineheatwave
+type: Zarr (v2)
+grid: 0.25
+timescale: monthly
+related_api: manuals/odb_mhw_openapi.json
+tags: [SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, global, 全球海洋熱浪]
+variables: [sst, sst_anomaly, level, td]
+tags: [woa23, zarr, temperature, salinity, metadata, annual, ODB, global, 全球海洋圖集, "World Ocean Atalas 2023"]
+description: "Summary of Zarr metadata for Marine Heatwaves (MHW) 0.25 degree monthly data evaluated from 0.25-degree gridded NOAA OISST v2.1, compiled by Ocean Data Bank (ODB)"

@@ -1,0 +1,23 @@
+---
+source_file: data_summaries/mhw_zarr_metadata.yml
+document_type: data_summary
+dataset_name: marineheatwaves
+type: Zarr (v2)
+grid: 0.25
+timescale: monthly
+related_api: manuals/odb_mhw_openapi.json
+tags: [SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, global, 全球海洋熱浪]
+variables: [sst, sst_anomaly, level, td]
+description: "Summary of Zarr metadata for Marine Heatwaves (MHW) 0.25 degree monthly data evaluated from 0.25-degree gridded NOAA OISST v2.1, compiled by Ocean Data Bank (ODB)"
+content: |
+  <xarray.Dataset> Size: 15GB
+  Dimensions:      (date: 523, lat: 720, lon: 1440)
+  Coordinates:
+    * date         (date) datetime64[ns] 4kB 1982-01-01 1982-02-01 ... 2025-07-01
+    * lat          (lat) float32 3kB -89.88 -89.62 -89.38 ... 89.38 89.62 89.88
+    * lon          (lon) float32 6kB 0.125 0.375 0.625 0.875 ... 359.4 359.6 359.9
+  Data variables:
+      td           (date, lat, lon) float64 4GB dask.array<chunksize=(2, 180, 360), meta=np.ndarray>
+      sst          (date, lat, lon) float32 2GB dask.array<chunksize=(2, 180, 360), meta=np.ndarray>
+      level        (date, lat, lon) int64 4GB dask.array<chunksize=(2, 180, 360), meta=np.ndarray>
+      sst_anomaly  (date, lat, lon) float64 4GB dask.array<chunksize=(2, 180, 360), meta=np.ndarray>
