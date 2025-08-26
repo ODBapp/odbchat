@@ -1,9 +1,0 @@
----
-source_file: manuals/odb_mhw_openapi.json
-dataset_name: marineheatwave
-description: Marine heatwaves (MHWs) Open API Specification (OAS) of Ocean Data Bank (ODB)
-tags: [SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, global, 全球海洋熱浪, OpenAPI]
-type: OpenAPI Specification
-grid: 0.25
-timescale: monthly
-variables: [sst, sst_anomaly, level, td]

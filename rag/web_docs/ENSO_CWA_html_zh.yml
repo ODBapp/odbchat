@@ -2,19 +2,17 @@
 dataset: marineheatwave
 collection: mhw
 doc_type: web_article
-title: 聖嬰現象(ENSO): 什麼是ENSO? (TW)
+title: 聖嬰現象(ENSO) & 什麼是ENSO?
 lang: zh_TW
 issuer: "中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan"
 canonical_url: "https://www.cwa.gov.tw/V8/C/C/Knowledge/knowledge_4-1.html"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
-doc_id: "sha1:04d301444644a23399d005a116fe564d2c6ce0dd" 
+doc_id: "04d301444644a23399d005a116fe564d2c6ce0dd" 
 tags: [ENSO, "El Niño", "La Niña", "Oceanic Niño Index", "SST anomalies", "聖嬰現象", "反聖嬰", basics]
 related_to:
-  - doc_id: "sha1:c5edba53a128c7540e3d50c139d83d86b8a34087"
+  - doc_id: ["c5edba53a128c7540e3d50c139d83d86b8a34087"]
   - collection: "mhw"
-depends_on:
-  - manuals/odb_mhw_openapi.json
 source_file: "web_docs/md/ENSO_CWA_html_zh.md"
 source_type: web
 version: v1

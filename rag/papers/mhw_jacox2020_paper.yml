@@ -1,0 +1,244 @@
+---
+dataset: marineheatwave
+collection: mhw
+doc_type: paper_note
+title: "Thermal displacement by marine heatwaves (Jacox et al., 2020)"
+lang: en
+issuer: "Nature"
+canonical_url: "https://doi.org/10.1038/s41586-020-2534-z"
+license: "Publisher Copyright (Fair use for excerpt)"
+retrieved_at: "2025-08-26"
+doc_id: "4aa0def856dfdebb205135c3a9d5a76a55110e38"
+tags: [MHW, "Thermal displacement", anomalies, methodology, ecosystem, impacts, Jacox2020]
+depends_on:
+  - manuals/odb_mhw_openapi.json
+source_file: "https://doi.org/10.1038/s41586-020-2534-z"
+source_type: paper
+content: |
+  Abstract
+  Thermal displacement by marine heatwaves
+  Michael G. Jacox1,2,3 ✉, Michael A. Alexander2, Steven J. Bograd1,3 & James D. Scott2,4
+  Marine heatwaves (MHWs)—discrete but prolonged periods of anomalously warm 
+  ocean temperatures—can drastically alter ocean ecosystems, with profound ecological 
+  and socioeconomic impacts1–8. Considerable effort has been directed at understanding 
+  the patterns, drivers and trends of MHWs globally9–11. Typically, MHWs are 
+  characterized on the basis of their intensity and persistence at a given location—an 
+  approach that is particularly relevant for corals and other sessile organisms that must 
+  endure increased temperatures. However, many ecologically and commercially 
+  important marine species respond to environmental disruptions by relocating to 
+  favourable habitats, and dramatic range shifts of mobile marine species are among the 
+  conspicuous impacts of MHWs1,4,12,13. Whereas spatial temperature shifts have been 
+  studied extensively in the context of long-term warming trends14–18, they are 
+  unaccounted for in existing global MHW analyses. Here we introduce thermal 
+  displacement as a metric that characterizes MHWs by the spatial shifts of surface 
+  temperature contours, instead of by local temperature anomalies, and use an 
+  observation-based global sea surface temperature dataset to calculate thermal 
+  displacements for all MHWs from 1982 to 2019. We show that thermal displacements 
+  during MHWs vary from tens to thousands of kilometres across the world’s oceans and 
+  do not correlate spatially with MHW intensity. Furthermore, short-term thermal 
+  displacements during MHWs are of comparable magnitude to century-scale shifts 
+  inferred from warming trends18, although their global spatial patterns are very 
+  different. These results expand our understanding of MHWs and their potential 
+  impacts on marine species, revealing which regions are most susceptible to thermal 
+  displacement, and how such shifts may change under projected ocean warming. The 
+  findings also highlight the need for marine resource management to account for 
+  MHW-driven spatial shifts, which are of comparable scale to those associated with 
+  long-term climate change and are already happening.
+
+  Overview (part, about definition and methodology)
+  ... MHWs have been defined and characterized on the basis of the local amplitude and 
+  persistence of sea surface temperature (SST) anomalies... To account for this critical 
+  dimension of MHW impacts, which is not captured by local temperature anomaly metrics, 
+  we introduce and quantify the ‘thermal displacement’ associated with MHWs across the globe. 
+  Thermal displacement is the minimum distance that   must be travelled away from an MHW to 
+  track constant SST. It is related to climate velocity (the rate at which isotherms move 
+  across the Earth’s surface under climate change) but is applied on an event scale in which 
+  the magnitude of the displacement, not the rate of change, is of greatest interest...
+  we use monthly SST anomalies from version 2 of the NOAA 0.25° Optimum Interpolation SST 
+  product to explore historical (1982–2019) spatial and temporal patterns of thermal 
+  displacement throughout the world’s oceans, and then quantify the future change 
+  in these displacements associated with projected warming from an ensemble of climate models...
+
+  ... Several MHWs have received extensive scientific and public atten-
+  tion in the past decade, and can be viewed through the lens of thermal 
+  displacement. In the Northeast Pacific, 2014–2016 brought an unprec-
+  edented MHW initially situated offshore (‘the Blob’)20 that later evolved 
+  into an arc warming pattern spanning the North American west coast24. 
+  During this event, thermal displacements exceeded 700 km in the Gulf 
+  of Alaska and along the US west coast. Similar displacements were 
+  generated in 2005 by the delayed upwelling season and consequent 
+  warming... The 2012 Northwest Atlantic MHW... was the 
+  most intense seen in the region in 30 years, and drove commercially 
+  valuable species to rapidly shift poleward by hundreds of kilometres...
+
+  Methods
+  Defining marine heatwaves
+  Historical SST observations for the 1982–2019 period were obtained from 
+  the NOAA 0.25° Optimum Interpolation SST, version 2 (OISSTv238,39), 
+  which has been used previously for MHW detection9. We masked out 
+  regions where OISSTv2 ice concentrations were greater than zero for 
+  more than 15 days in a month. MHWs were identified on the basis of 
+  methodology adapted from Hobday et al.21. For each grid cell we cal-
+  culated time series of SST anomalies relative to the 1982–2011 clima-
+  tology and classified MHWs as periods with SST anomalies above a 
+  seasonally varying 90th-percentile threshold (Extended Data Fig. 5). 
+  Our analysis differs from those used in some other studies in that we 
+  used monthly averaged SST rather than daily data, and we detrended 
+  the SST anomalies to distinguish discrete, transient MHWs from the 
+  long-term warming signal31. Although we believe that the choices to use 
+  monthly data and to detrend anomalies are the most appropriate for 
+  this analysis, we are aware of the lack of consensus on these aspects of 
+  MHW definition and detection. Therefore, in section ‘Justification for 
+  MHW definition and implications for this study’ we outline the moti-
+  vations for our choices and we compare our results to those based on 
+  daily data and those calculated without removing the warming trend. 
+  Neither the monthly data frequency nor the detrending qualitatively 
+  affect our results.
+  Calculating thermal displacement
+  For each MHW (that is, every month characterized as an MHW in each 
+  grid cell), the climatological SST (SSTCLIM) for that location and time 
+  was first determined by subtracting the detrended SST anomaly from 
+  the observed SST. Thermal displacement was then calculated as the 
+  great circle distance to the nearest grid cell with SST equal to or less 
+  than SSTCLIM (Extended Data Fig. 5). Thermal displacements were con-
+  strained so that unrealistic paths through land barriers (for example, 
+  entering or exiting inland seas, crossing continents between ocean 
+  basins) did not alter the large-scale patterns presented here. However, 
+  paths that interacted with land were allowed if they represented realistic 
+  displacements (for example, along the California coast in Fig. 3a); in 
+  such cases, the reported thermal displacements underestimate the 
+  true distance travelled by an oceanic pathway. Regions for which a 
+  displaced thermal habitat is sometimes unreachable include inland 
+  seas as well as gulfs, bays, and seas that are bounded by land masses 
+  on the poleward side. We note that an alternative approach drawing 
+  on the climate velocity literature would be to calculate the thermal 
+  displacement as the MHW intensity divided by the local SST gradient. 
+  This approach is appropriate for climate velocity, a local rate of change, 
+  but fails for MHW-driven thermal displacements that depend not only 
+  on the local SST gradient but also on the broader spatial structure of 
+  SST and locations of land masses.
+
+  Justification for MHW definition and implications for this study
+  Here we discuss the justifications for using monthly data and detrend-
+  ing SST anomalies, and the implications of those choices for the results 
+  of the study. We note at the outset that they do not qualitatively affect 
+  our findings; using monthly instead of daily data alters the frequency 
+  and duration of identified MHWs (Extended Data Table 1, Extended Data 
+  Fig. 6), but MHW intensities are only slightly reduced and impacts on 
+  thermal displacements are negligible (Extended Data Table 1, Extended 
+  Data Fig. 7). Similarly, using a fixed 1982–2011 baseline climatology 
+  instead of detrending the historical SST data generally increases MHW 
+  intensities and thermal displacements, most notably in the high north-
+  ern latitudes, but produces no consequential changes in our conclu-
+  sions (Extended Data Figs. 8–10).
+  The recommended MHW definition of Hobday et al.21 has been 
+  adopted by many in general terms, although details of the methodol-
+  ogy have been altered depending on the particular aims and constraints 
+  of different studies. For example, Holbrook et al.11 used the 98th per-
+  centile as a threshold (instead of the 90th percentile) because “a 90th 
+  percentile threshold resulted in too many small events that made it 
+  unclear when the main event was taking place”. Using monthly instead 
+  of daily data similarly limits identified MHWs to the ‘main events’. Data 
+  with monthly resolution and/or coarse spatial resolution have been 
+  used for historical analyses and future projections9,10,41, and monthly 
+  data are used in forecasts for MHWs and other SST anomalies42–44. With 
+  respect to the reference period for defining MHWs, several analyses of 
+  long-term MHW trends have used fixed baselines9,10, although other 
+  studies have employed detrended anomalies11,41 (we note that these 
+  studies using fixed baselines and detrended anomalies share many 
+  of the same authors). Thus, modifying the Hobday et al.21 definition 
+  is not without precedent; it is a proposal rather than a consensus and 
+  indeed the authors state “these metrics can, of course, be modified 
+  to suit the specific application”. Below we outline the justifications 
+  for our choices in the context of this study, addressing first the use of 
+  the monthly data and then the removal of long-term warming trends.
+  We chose to use monthly SST data for our analysis for several reasons. 
+  (i) The atmospheric heatwave definition requires a minimum three-day 
+  event duration21; although Hobday et al.21 note that for MHWs “minor 
+  differences to the atmospheric definition (minimum duration and 
+  minimum time between events) were implemented because of the 
+  naturally longer time scales of ocean variability compared with atmos-
+  pheric variability”, the adjustment from three days for the atmosphere 
+  to five days for the ocean is not representative of their different scales of 
+  variability. The atmosphere has very little memory and is often treated 
+  as stochastic, whereas decorrelation timescales in the ocean can range 
+  from days to over a year (see ref. 45 and references therein). Thus, we 
+  argue that a minimum MHW duration of a month represents a more 
+  appropriate scaling relative to the atmospheric heatwave definition. 
+  (ii) MHW definitions based on monthly data are more consistent with 
+  reported impacts. The MHWs identified as being the most impactful 
+  historically have, with few exceptions, lasted at least a month46,47, and 
+  although MHWs are generally thought of as rare events, according to 
+  daily definitions they happen multiple times per year in most locations. 
+  For example, in the Eastern Tropical Pacific we find MHWs once every 
+  3–4 years using monthly data, which is consistent with the frequency 
+  of El Niño events. By contrast, using daily data with a five-day minimum 
+  duration, we find on average 1.2 MHWs per year identified in that region 
+  (Extended Data Table 1). (iii) To the extent that thermal displacement 
+  can serve as a proxy for distributional shifts of marine species, MHWs 
+  must last long enough for those distributional shifts to occur. Such 
+  ecological impacts (for example, marine fishes swimming hundreds 
+  or thousands of kilometres) will not be realized in a matter of days. 
+  (iv) Thermal displacement calculations are much more computationally 
+  expensive than calculations of other MHW metrics (for example, inten-
+  sity, duration and frequency). In addition to being more appropriate 
+  for this analysis for the reasons listed above, the use of monthly data 
+  also lowers the computational burden dramatically. Nonetheless, the 
+  same methodology can be applied to daily MHW definitions if desired.
+  There are physical and ecological arguments for detrending SST 
+  anomalies when defining and characterizing MHWs in the presence 
+  of a long-term warming trend31. From a physical perspective, we start 
+  from the premise that an MHW is, in fact, a wave (or, more precisely, 
+  the warmest part of a temperature anomaly wave). Using a fixed base-
+  line leads to clear violations of wave property definitions (amplitude/
+  intensity, frequency), which are objectively determined relative to a 
+  contemporaneous equilibrium position. Furthermore, the proposed 
+  qualitative MHW definition of “a discrete prolonged anomalously warm 
+  water event”21 is violated when using a fixed baseline in a warming ocean; 
+  eventually historical MHW thresholds are permanently exceeded and 
+  MHWs are neither discrete (that is, “with well-defined start and end 
+  times”21) nor anomalous (given that something that occurs every day 
+  is not anomalous).
+  Arguments in favour of a fixed baseline for MHWs generally invoke 
+  impacts on marine species, specifically that (1) they respond to the total 
+  temperature change, not just the variability around the mean, and/or 
+  (2) they have evolved in response to historical, not future, conditions. 
+  We agree with the argument that the total warming is important for 
+  species responses, but that does not mean that all warming is associated 
+  with MHWs. When changes in temperature due to the combination of 
+  MHWs and long-term warming are of interest, metrics such as cumula-
+  tive stress, degree days or threshold exceedance are appropriate48. We 
+  also agree with the argument that species have evolved on the basis of 
+  past conditions. However, different species respond in different ways, 
+  at different thresholds and on different timescales, and their adap-
+  tive and evolutionary capacities are similarly disparate in nature and 
+  timescale. Thus, although MHW metrics are useful for characterizing 
+  marine ecosystem change, no MHW definition will pass the test of being 
+  broadly appropriate for marine species responses. As is done for other 
+  ecologically important physical ocean phenomena (upwelling for exam-
+  ple), MHW metrics should be defined on the basis of physics, and their 
+  impacts can then be explored for the organism or application of interest.
+  Finally, from the perspective of species that have evolved over per-
+  haps millions of years, a 1980–2010 (or similar) baseline has no more 
+  relevance than an 1880–1910 or a 2080–2110 baseline. Rather, recent 
+  decades offer a useful baseline for us to evaluate the ecosystem because 
+  they represent our ‘normal’. Even though the oceans have warmed over 
+  the past century, we evaluate MHWs relative to a recent baseline; in 
+  the future, people will be similarly interested in variability relative to 
+  their ‘normal’. For example, taking the simplifying assumption that a 
+  commercial fish species follows surface isotherms, that species will 
+  exhibit a relatively slow shift in its mean position due to mean warming, 
+  as well as relatively fast shifts around its mean position due to MHWs. 
+  The different timescales of the two shifts have different implications 
+  for fisheries—the slow shift would dictate changes regarding where fish-
+  ing operations should be based, whereas the fast shifts would dictate 
+  year-to-year disruptions in the fishery. One could think of an analogy 
+  using sea level—if a beach has waves that are 1 m high and the sea level 
+  rises 2 m owing to warming and ice melt, would we say that the waves 
+  are now 3 m high? We argue that that would be technically incorrect 
+  and misleading; characterizations of waves and mean sea level rise 
+  should be kept separate so that, as appropriate, waves can be assessed 
+  separately (for example, by a surfer who cares only about the wave 
+  height) or in combination with the mean change (for example, by a 
+  beachfront property owner who cares about the total sea level change).
+ 

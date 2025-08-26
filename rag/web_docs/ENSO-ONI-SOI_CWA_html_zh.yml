@@ -2,19 +2,17 @@
 dataset: marineheatwave
 collection: mhw
 doc_type: web_article
-title: 什麼是ENSO? (TW)
+title: 什麼是ENSO?
 lang: zh_TW
 issuer: "中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan"
 canonical_url: "https://climate.cwa.gov.tw/ENSO?subpage=Intro"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
-doc_id: "sha1:c5edba53a128c7540e3d50c139d83d86b8a34087"
+doc_id: "c5edba53a128c7540e3d50c139d83d86b8a34087"
 tags: [ENSO, "Southern Oscillation", "El Niño", "La Niña", "Oceanic Niño Index", "SST anomalies", "沃克環流", "Walker circulation", "聖嬰現象", "反聖嬰", "南方振盪", basics]
 related_to:
-  - doc_id: "sha1:04d301444644a23399d005a116fe564d2c6ce0dd"
+  - doc_id: [04d301444644a23399d005a116fe564d2c6ce0dd"]
   - collection: "mhw"
-depends_on:
-  - manuals/odb_mhw_openapi.json
 source_file: "web_docs/md/ENSO-ONI-SOI_CWA_html_zh.md"
 source_type: web
 version: v1

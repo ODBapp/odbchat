@@ -1,0 +1,229 @@
+---
+dataset: marineheatwave
+collection: mhw
+doc_type: code_snippet
+title: "Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API"
+lang: en
+issuer: "ODB Project (internal)"
+canonical_url: "https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb"
+license: "MIT"
+retrieved_at: "2025-08-26"
+doc_id: "94eff5435a8e3c4ab192526d1d7d3f81e04f202f"
+tags: [MHW, API, timeseries, Python, map, examples]
+related_to:
+  - doc_id: ["c4aca131c497500a668336dacb65f08ade88077a", "ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
+  - collection: "mhw"
+depends_on:
+  - manuals/odb_mhw_openapi.json
+source_file: "https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb"
+source_type: code
+content: |
+  ```python
+  #!/usr/bin/env python
+  import pandas as pd
+  import numpy as np
+  import requests
+  import matplotlib.pyplot as plt
+  import matplotlib.dates as mdates
+  import matplotlib.colors as mcolors
+  from matplotlib.dates import DateFormatter
+  from matplotlib import cm
+  from mpl_toolkits.basemap import Basemap
+  
+  import os
+  from pathlib import Path
+  os.chdir(Path().resolve()) 
+  print(os.getcwd())
+  
+  # Step 1: Open API Fetch
+  def fetch_mhw_data(lon0, lat0, lon1, lat1, start, end):
+      url = f"https://eco.odb.ntu.edu.tw/api/mhw" # Find API server at API manual: https://api.odb.ntu.edu.tw/hub/swagger?node=odb_mhw_v1
+      params = {
+          "lon0": lon0,
+          "lat0": lat0,
+          "lon1": lon1,
+          "lat1": lat1,
+          "start": start,
+          "end": end,
+          "append": "sst,sst_anomaly,level",
+      }
+      response = requests.get(url, params=params)  # Send request to API server and get JSON response from the server
+      if response.status_code == 200:
+          return pd.DataFrame(response.json())  # Convert JSON response to Pandas dataframe
+      else:
+          print("Failed to fetch data:", response.text)
+          return None
+  
+  # region for Niño 3.4 (5°N–5°S, 170°W–120°W)
+  lon0, lon1 = -170, -120  
+  lat0, lat1 = -5, 5
+  start, end = "2025-05-01", "2025-05-30"
+  data = fetch_mhw_data(lon0, lat0, lon1, lat1, start, end)
+  print(data.head())
+  
+  # Test a stronger La Niña event
+  # Plot a wider region, but it across 180°E antimeridian, so we need to split the data fetching 
+  start, end = "2007-12-01", "2007-12-30"
+  lat0, lat1 = -25, 25
+  lon0, lon1 = 135, -60  # 180°E to 300°E
+  
+  # def get_combined_ssta_data():
+  d1 = fetch_mhw_data(-179.999, lat0, lon1, lat1, start, end)
+  d2 = fetch_mhw_data(lon0, lat0, 179.999, lat1, start, end)
+  # return 
+  data = pd.concat([d1, d2], ignore_index=True)
+  print(data.head())
+  
+  data["date"] = pd.to_datetime(data["date"])
+  data['lon_360'] = data['lon'].apply(lambda x: x + 360 if x < 0 else x) # basemap needs 0-360 degrees longitude
+  
+  # Reshape to grid for plotting (matrix-like dataframe: column is longitude, row is latitude, just like the grids in our result plot)
+  def reshape_to_grid_fixed(data, column, date, lon_col='lon'):
+      data_filtered = data[data["date"] == date]
+      all_lats = np.sort(data["lat"].unique())
+      all_lons = np.sort(data[lon_col].unique())
+      grid = pd.DataFrame(index=all_lats, columns=all_lons)
+      for _, row in data_filtered.iterrows():
+          grid.at[row["lat"], row[lon_col]] = row[column]
+      return grid.astype(float)
+  
+  grid = reshape_to_grid_fixed(data, 'sst_anomaly', start, lon_col='lon_360') # package Basemap accept 0-360 degree, so we need to convert it
+  print(grid.tail())
+  
+  def draw_nino_regions(m):
+      """畫出 Niño 區域在 basemap 上"""
+      boxes = {
+          'Niño 1+2': (270, 280, -10, 0),    # 90W~80W
+          'Niño 3':   (210, 270, -5, 5),     # 150W~90W
+          'Niño 4':   (160, 210, -5, 5),     # 160E~150W
+          'Niño 3.4': (190, 240, -5, 5),     # 170W~120W
+      }
+      colors = {
+          'Niño 1+2': 'deepskyblue',
+          'Niño 3':   'darkorange',
+          'Niño 4':   'limegreen',
+          'Niño 3.4': 'crimson',
+      }
+      linestyles = {
+          'Niño 1+2': 'dashed',
+          'Niño 3':   'dashed',
+          'Niño 4':   'dashed',
+          'Niño 3.4': 'dashdot',
+      }
+  
+      for name, (lon_min, lon_max, lat_min, lat_max) in boxes.items():
+          x = [lon_min, lon_max, lon_max, lon_min, lon_min]
+          y = [lat_min, lat_min, lat_max, lat_max, lat_min]
+          m.plot(x, y, latlon=True, linestyle=linestyles[name],
+                 linewidth=1.5, label=name, color=colors[name])
+      plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=4, fontsize='small')
+  
+  
+  def plot_ssta_grid(grid, date, lon0, lon1, lat0, lat1):
+      plt.figure(figsize=(12, 5))
+      fig, ax = plt.subplots(figsize=(12, 4))
+      m = Basemap(projection="cyl", llcrnrlon=lon0, urcrnrlon=lon1,
+                  llcrnrlat=lat0, urcrnrlat=lat1, resolution="l", ax=ax)
+      m.drawcoastlines()
+      m.drawparallels(np.arange(lat0, lat1+1, 5), labels=[1,0,0,0])
+      m.drawmeridians(np.arange(lon0, lon1+1, 10), labels=[0,0,0,1])
+      m.drawmapboundary(fill_color='white')
+  
+      # 經緯度格點
+      lon2d, lat2d = np.meshgrid(grid.columns.astype(float), grid.index.astype(float))
+  
+      # 繪製底圖 We need fill each grid with colors by SST anomaly values in the `grid` dataframe
+      cs = m.contourf(lon2d, lat2d, grid.values.astype(float), cmap=cm.RdYlBu_r,
+                      levels=np.linspace(-3, 3, 21), extend='both', latlon=True)
+  
+      draw_nino_regions(m)
+  
+      cbar = plt.colorbar(cs, orientation="vertical", shrink=0.8, pad=0.02)
+      cbar.set_label("SST Anomaly (°C)")
+      plt.title(f"SST Anomalies in Central Pacific (Nino3.4) - {date.strftime('%b %Y')}")
+      plt.tight_layout()
+      plt.show()
+  
+  plot_ssta_grid(grid, pd.to_datetime(start), lon0, lon1+360, lat0, lat1)
+  
+  # Function to get Niño 3.4 SST anomalies from NOAA data
+  # Following https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/ONI_v5.php
+  # The Oceanic Niño Index (ONI): running 3-month mean SST anomaly for the Niño 3.4 region (5oN-5oS, 120o-170oW)
+  # El Niño/La Niña event: 5 consecutive overlapping 3-month periods >/< +- 0.5oC
+  def get_nino34_anomalies(start="1950", end="2025"):
+      url = "https://psl.noaa.gov/data/timeseries/month/data/nino34.long.anom.data"
+      response = requests.get(url, timeout=30)
+      lines = response.text.strip().split('\n')[1:]  # skip header
+  
+      data = []
+      for line in lines:
+          parts = line.strip().split()
+          if len(parts) < 13:
+              continue
+          try:
+              year = int(parts[0])
+              if year < int(start[:4]) or year > int(end[:4]):
+                  continue
+              for i, val in enumerate(parts[1:13]):
+                  if '-99.99' in val:
+                      break
+                  ts = pd.Timestamp(year=year, month=i + 1, day=15)
+                  data.append((ts, float(val)))
+          except ValueError:
+              continue
+  
+      return pd.DataFrame(data, columns=["date", "ssta"]).set_index("date")
+  
+  
+  ssta = get_nino34_anomalies("1950", "2025")
+  print(ssta.head())
+  
+  # Fetch ODB MHW API data year by year for the specified region
+  def fetch_yearly_data(lon0, lat0, lon1, lat1, start_year, end_year):
+      all_data = []
+      for year in range(start_year, end_year + 1):
+          start = f"{year}-01-01"
+          end = f"{year}-12-31"
+          print(f"Fetching data for {start} to {end}...")
+          yearly_data = fetch_mhw_data(lon0, lat0, lon1, lat1, start, end)
+          if yearly_data is not None:
+              all_data.append(yearly_data)
+      if all_data:
+          return pd.concat(all_data, ignore_index=True)
+      else:
+          return None
+
+  start_year, end_year = 1982, 2024  # Iterate year range to get MHW data
+  ylon0, ylat0, ylon1, ylat1 = -170, -5, -120, 5  # Niño 3.4 region
+  ydata = fetch_yearly_data(ylon0, ylat0, ylon1, ylat1, start_year, end_year)
+  ydata.to_csv("./data/examples/nino34_mhw_1982-2024.csv", index=False) # This file may excceed 300MB, just too large to store in GitHub 
+
+  nino_mean = ydata.groupby("date")["sst_anomaly"].mean()
+  nino_mean.index = pd.to_datetime(nino_mean.index)
+  print(nino_mean.head())
+  print(len(nino_mean))
+  nino_mean.to_csv("./data/examples/nino34_mean_1982-2024.csv", index=True)
+  
+  sst_mean = ydata.groupby("date")["sst"].mean()
+  sst_mean.index = pd.to_datetime(sst_mean.index)
+  print(sst_mean.head())
+  print(len(sst_mean))
+  sst_mean.to_csv("./data/examples/nino34_sst_1982-2024.csv", index=True)
+
+  fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
+  
+  # Plot 1: Niño 3.4 SST anomaly
+  axes[0].plot(ssta.index, ssta, color='cornflowerblue', lw=1)
+  axes[0].set_ylabel("SST Anomaly from NOAA(°C)")
+  axes[0].legend(["Niño 3.4 SST Anomaly from NOAA"], loc='upper left')
+  
+  # Plot 2: Data from ODB MHW API
+  axes[1].plot(nino_mean.index, nino_mean, color='black', lw=1)
+  axes[1].set_ylabel("SST Anomaly from MHW API(°C)")
+  axes[1].legend(["Niño 3.4 SST Anomaly from ODB MHW API"], loc='upper left')
+  
+  plt.suptitle("SST Anomalies Time Series at Niño 3.4 region", fontsize=14)
+  fig.tight_layout()
+  plt.show()
+  ```  
+  

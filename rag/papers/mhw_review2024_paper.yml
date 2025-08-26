@@ -1,0 +1,158 @@
+---
+dataset: marineheatwave
+collection: mhw
+doc_type: paper_note
+title: "A global overview of marine heatwaves in a changing climate (Capotondi et al., 2024)"
+lang: en
+issuer: "Commun Earth Environ"
+canonical_url: "https://doi.org/10.1038/s43247-024-01806-9"
+license: "Publisher Copyright (Fair use for excerpt)"
+retrieved_at: "2025-08-26"
+doc_id: "2ccedb1ef0c1ade74224399ad9767a2e71f5e51"
+tags: [MHW, "extreme MHWs", anomalies, review, ecosystem, impacts, "Climate changes"]
+related_to:
+  - doc_id: ["799ebc3fe983aa3ef30b81ded189b749373d3ef7"]
+  - collection: "mhw"
+source_file: "https://doi.org/10.1038/s43247-024-01806-9"
+source_type: paper
+content: |
+  Abstract
+  communications earth & environment
+  Review article
+  https://doi.org/10.1038/s43247-024-01806-9
+  A global overview of marine heatwaves in a
+  changing climate
+  Marine heatwaves have profoundly impacted marine ecosystems over large areas of the world
+  oceans, calling for improved understanding of their dynamics and predictability. Here, we critically
+  review the recent substantial advances in this active area of research, including the exploration of the
+  three-dimensional structure and evolution of these extremes, their drivers, their connection with other
+  extremes in the ocean and over land, future projections, and assessment of their predictability and
+  current prediction skill. To make progress on predicting and projecting marine heatwaves and their
+  impacts, a more complete mechanistic understanding of these extremes over the full ocean depth and
+  at the relevant spatial and temporal scales is needed, together with models that can realistically
+  capture the leading mechanisms at those scales. Sustained observing systems, as well as measuring
+  platforms that can be rapidly deployed, are essential to achieve comprehensive event
+  characterizations while also chronicling the evolving nature of these extremes and their impacts in our
+  changing climate.
+
+  Overview (part, about Box1, Fig.1 and conclusion)
+  ... Although MHW research has primarily considered temperature extremes
+  at the ocean surface, subsurface temperature extremes may be more
+  intense and longer-lasting than their surface counterparts... Given the
+  prevalence of life throughout the water column, subsurface MHWs need
+  to be closely observed, mechanistically understood, and skillfully pre-
+  dicted. In addition, while the physical characterization of MHWs has
+  mainly focused on large-scale events (Box 1), MHWs are now also studied
+  in more localized coastal areas, marginal seas...
+
+  Box 1 | Historical marine heatwaves and the unprecedented summer of 2023
+  Recent decades have witnessed the occurrence of MHWs that were
+  particularly intense, long-lasting and impactful (top panel of Box ﬁgure,
+  showing SST anomalies above 1 °C at the peak month of each MHW).
+  These most prominent MHWs generally occurred in different regions at
+  different times. However, the boreal summer of 2023 recorded global
+  monthly-mean SSTs at record high since the beginning of the instru-
+  mental record178, with a large fraction of the ocean experiencing extreme
+  conditions, as illustrated by the widespread SST anomalies76 above the
+  90th percentile (1982–2011 baseline) during July 2023 (bottom panel of
+  Box ﬁgure). In particular, average North Atlantic (0°–60°N, 0°–80°W)
+  temperatures reached levels of warming that exceeded four standard
+  deviations of the 1980–2011 period during parts of July and September
+  2023179, with an annual average ~0.23 °C higher than in 2022180.
+  What caused this unprecedented global extreme? The developing El
+  Niño in 2023 can be expected to have caused an increase in radiative
+  heating due to the inﬂuence of the El Niño SST pattern on atmospheric
+  static stability and low-level clouds181. In addition, El Niño can alter the
+  atmospheric circulation and cause the development of SST anomalies in
+  different regions of the world, like the northeast Paciﬁc110 and the tropical
+  North Atlantic182, although warming in the tropical North Atlantic usually
+  occurs after the peak of an El Niño event rather than during its develop-
+  ment phase. The pattern of Atlantic warming is consistent with the
+  negative phase of the North Atlantic Oscillation183, which was indeed
+  strongly negative from mid-April to mid-May and most of July 2023. The
+  concentration of the 2023 warming in near-surface waters180 suggests
+  that upper ocean stratiﬁcation, possibly modulated by large-scale cli-
+  mate modes, may have played an important role in preventing the excess
+  heat absorbed by the ocean from being effectively distributed downward,
+  resulting in enhanced surface warming. Other hypotheses regarding the
+  unprecedented 2023 warming include a decreased transport of Saharan
+  dust to the western Atlantic, and a reduction of ship emissions following a
+  2020 international agreement, leading to an increase in radiative
+  forcing184, although the inﬂuence of these factors on Atlantic warming has
+  yet to be demonstrated. Another proposed hypothesis pertains to the
+  aftermath of the January 2022 Hunga Tonga-Hunga Ha’apai volcanic
+  eruption in Tonga185. This eruption emitted aerosols, which had cooling
+  effects, while simultaneously releasing stratospheric water vapor, which
+  had warming effects. However, these factors are estimated to explain, at
+  most,amarginalnetcooling ofa fewhundredths ofa degree,ratherthana
+  warming185. In addition to these mostly natural drivers, the ocean is
+  estimated to have absorbed about 90% of the excess heat associated
+  with global warming161, causing an average warming of the upper 2000m
+  of the global ocean of ~6.6 1021J/year over 1958–2023180. Thus, it is very
+  likely that climate change has contributed to the intensityand widespread
+  coverage of the 2023 MHWs.
+
+  https://doi.org/10.1038/s43247-024-01806-9
+  Review article
+  Communications Earth & Environment | (2024)5:701
+  
+  ===== Page 3 =====
+  As the oceans continue to warm with anthropogenic climate
+  change48,49, deﬁning MHWs under non-stationary conditions becomes
+  increasingly challenging, as commonly used deﬁnitions will lead to a per-
+  manent MHW state in areas experiencing sufﬁcient warming50 (Fig. 1). In
+  addition, separating the processes internal to the climate system from those
+  of anthropogenic origin51,52 is key to the mechanistic understanding of the
+  nature of MHWs and the assessment of their predictability and their future
+  changes.
+  This article extends previous reviews by highlighting the new
+  emerging areas in MHW research outlined above, including: a critical re-
+  evaluation of MHW deﬁnitions and their detection, both at the surface and
+  inthesubsurface,inthepresenceofclimatechange;observationalneedsand
+  new emerging “observing” strategies; advances in the understanding of both
+  surface and subsurface MHW drivers to aid prediction efforts; compound
+  events and their prediction; and investigations to assess future MHW
+  projections using empirical approaches and state-of-the-art modeling sys-
+  tems.Thisreviewalsoprovidesaperspectiveonnewandpromisingavenues
+  for advancing our understanding and prediction capabilities of ocean
+  extremes in the context of our changing climate.
+
+  Deﬁning a marine heatwave
+  Deﬁning a MHW involves multiple choices, each leading to outcomes with
+  distinct implications. These choices may be motivated by the need to
+  understand the physical drivers or impacts of a MHW, or they can be
+  constrained by the characteristics of the available data, like record length or
+  temporal resolution. For simplicity, MHWs have typically been analyzed
+  using local deﬁnitions... However, since MHWs have a three-dimensional
+  structure that evolves over time, other approaches are emerging... to
+  facilitate the tracking of extended surface or subsurface events over time.
+  Over the past decade, the majority of studies have adopted a common
+  framework for deﬁning MHWs. Following the widely used Hobday et al.
+  framework, a MHW occurs at a given location when daily sea surface
+  temperature anomalies exceed the seasonally-varying 90th percentile cli-
+  matology for ﬁve days or more (with dips below this threshold for two days
+  or less ignored). The 90th percentile climatology is typically based on a ﬁxed
+  reference period, or “baseline”.
+  These threshold criteria were chosen in analogy with atmospheric
+  heatwaves56, and were not necessarily dictated by speciﬁc impacts in the
+  marine environment. As such, other deﬁnitions have also been employed,
+  including, for example, deﬁnitions using the 99th percentile, approaches
+  using monthly data, instead of daily data (Fig. 1), annual max-
+  imum temperatures, or cumulative temperatures exceeding ﬁxed thresh-
+  olds, a criterion commonly used for coral bleaching monitoring and
+  prediction. Attempts to incorporate information on biological impacts
+  has led to the creation of MHW hazard indices, where species-tailored
+  metricswere co-developed with stakeholders using absolute temperatures.
+  With a ﬁxed baseline, MHW conditions will become increasingly common
+  as the ocean warms, potentially leading to a “permanent” MHW state in
+  regions experiencing a high level of warming (Fig. 1). These changing
+  characteristics may reﬂect the risk these events pose to some marine
+  organisms, particularly those with slow adaptation rates. However, con-
+  sidering a ﬁxed baseline limits our ability to distinguish the slow climate
+  change-related processes from the faster processes associated with internal
+  modes of climate variability or synoptic weather conditions40, with impli-
+  cations for understanding events’ predictability and assessing their predic-
+  tion skill66. Thus, there has been a recent call to remove the effects of mean
+  warming when deﬁning MHWs by detrending temperature time series or
+  using a shifting baseline period, especially for future projections...
+

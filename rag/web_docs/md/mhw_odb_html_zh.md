@@ -1,6 +1,24 @@
+**Marine Heatwaves**
+  
+[HTML source from ODB Marine Heatwaves](https://eco.odb.ntu.edu.tw/pub/MHW/)
+
 ODB 提供全球 0.25° x 0.25° 每月的海表平均溫度、海表溫度距平值、海洋熱浪級數與海洋熱浪引起的熱位移 (Thermal displacement) 之資料下載。
 
 ## About
+
+全球暖化造成的氣候危機導致地球持續升溫，陸地上的異常高溫熱浪帶來致命的威脅，而海洋也面臨相同狀況。在同一地點， 若海水溫度相對與過去平均海洋溫度出現一段時間的異常高溫，這種現象被稱為海洋熱浪 (marine heatwaves, MHW) ([Pearce et al., 2011](https://fish.gov.au/Archived-Reports/Documents/Pearce_et_al_2011.pdf); [Hobday et al., 2016](https://www.sciencedirect.com/science/article/pii/S0079661116000057))。 海洋熱浪的範圍可以延伸至數千平方公里，持續數周甚至數月 ([Di Lorenzo and Mantua, 2016](https://www.nature.com/articles/nclimate3082))，而這種長時間異常高溫的環境對於海洋生物、海洋生態系統和漁業資源都造成極大的影響。 為了提升民眾對海洋熱浪的認識， ODB 使用 [NOAA OISST](https://www.ncei.noaa.gov/products/optimum-interpolation-sst)（Optimum Interpolation Sea Surface Temperature，海洋表面溫度）0.25° x 0.25° 的資料 ([Huang et al. 2021](https://journals.ametsoc.org/view/journals/clim/34/8/JCLI-D-20-0166.1.xml))， 並依 [Jacox et al. (2020)](https://www.nature.com/articles/s41586-020-2534-z) 的方法，計算了全球 1982 年至今約 40 年間每個月的海洋熱浪事件（詳見 Method）， 同時，我們依據 [Hobday et al. (2018)](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves) 的分級標準，將海洋熱浪分級， 建立了一個全球海洋熱浪資料庫。此資料庫內容包含：每月的海表平均溫度、海表溫度距平值、海洋熱浪級數與海洋熱浪引起的熱位移\*， 該資料將每月進行更新，並開放資料下載。此外，除了提供數據下載外，我們也開放地理圖資介接服務 ([WMS](https://ecodata.odb.ntu.edu.tw/geoserver/marineheatwave/wms?service=WMS&request=GetCapabilities)/[WMTS](https://ecodata.odb.ntu.edu.tw/geoserver/gwc/service/wmts/?service=WMTS&request=getCapabilities)，若使用 QGIS 介接， 可參考[此網頁](https://oceandatabank.github.io/MHW_QGIS/))， 海洋熱浪數據也已整合至 [Hidy Viewer 2](https://odbview.oc.ntu.edu.tw/hidy/?odbMHW&map=z:2;c:[19.2453,121];datetime:2025-01-01T08:20:00.000Z)， 使用者可透過該平台查詢與視覺化全球海洋熱浪的時空分布，並透過互動式地圖進一步了解特定區域的熱浪強度（詳見 Hidy）。  
+  
+根據 [2022 年的《政府間氣候變化專門委員會》(IPCC) 報告](https://doi.org/10.1017/9781009325844)，未來全球海洋熱浪事件不僅頻率將增加，強度與持續時間也將上升。 面對愈來愈頻繁發生的海洋熱浪 ([Frölicher et al. 2018](https://www.nature.com/articles/s41586-018-0383-9); [Oliver et al., 2018](https://www.nature.com/articles/s41467-018-03732-9)) ， ODB 希望透過建立海洋熱浪資料庫提升使用者對海洋熱浪的認知與意識，進一步協助學界研究海洋熱浪時空分布和變化趨勢以及對海洋生物的可能影響，同時也為預測和應對海洋熱浪提供科學數據參考。  
+  
+\* Thermal Displacement: 熱位移就是在海洋熱浪的影響下，為了追隨長期平均海表溫度所需移動的最小距離 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))。 熱位移在本篇文獻中特指海洋熱浪對周圍海洋生態系統的影響範圍，特別是對海洋生物遷移、分布範圍和生態系統功能的影響。
+
+![海洋熱浪分級標準](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hobday_2018_2.jpg)  
+
+海洋熱浪分級標準，依據 [Hobday et al., 2018](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves) 分級方法，每月 SST 距平值超過門檻值 2 倍以下、2 倍至 3 倍之間、3 倍至 4 倍之間、4倍以上， 其分級為中等 (Moderate)、強烈 (Strong)、嚴重 (Severe)、極端 (Extreme)，共四個級別。圖修改自 [Hobday et al. (2018)。](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves)
+
+![海洋熱浪分級時間序列](https://eco.odb.ntu.edu.tw/pub/MHW/assets/time_series_example.jpg)  
+
+於臺灣近海東經 122.625 度、北緯 25.375 度，2020 一月至今的海洋熱浪分級時間序列。
 
 ## Method
 
@@ -32,6 +50,14 @@ ODB 提供全球 0.25° x 0.25° 每月的海表平均溫度、海表溫度距�
 \*熱位移就是在海洋熱浪的影響下，為了追隨長期平均海表溫度所需移動的最小距離 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))。 計算熱位移時考慮生物移動的合理性 (例如無法穿越陸地等) ，將全球海洋分區，並限制可移動的區域 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))，詳細計算方法請參考 Github 連結。
 
 ### Results
+
+![2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly) 海洋熱浪分級](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_level.jpg)  
+
+2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly) 海洋熱浪分級
+
+![2025/07 Thermal Displacement caused by Marine Heatwaves 海洋熱浪引發的熱位移](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_td.jpg)
+
+2025/07 Thermal Displacement caused by Marine Heatwaves 海洋熱浪引發的熱位移
 
 ### Reference List
 
@@ -88,7 +114,7 @@ Monthly mean SST（每月海表平均溫度） Monthly SST Anomalies（每月海
 #若區域範圍 > 90° x 90°，時間區段最長只能一個月，請輸入經度、緯度範圍和時間區段 e.g. /api/mhw/csv?lon0=-180&lon1=180&lat0=-90&lat1=90&start=2013-01-01 (可得 2013/01/01 的資料)
 
 #API 請求範例  
-https://eco.odb.ntu.edu.tw/api/mhw/csv?lon0=121&lat0=25.6&lon1=121.7&lat1=25.6&start=2023-04-01&end=2023-07-01&append=sst,sst\_anomaly,level,td 
+https://eco.odb.ntu.edu.tw/api/mhw/csv?lon0=121&lat0=25.6&lon1=121.7&lat1=25.6&start=2023-04-01&end=2023-07-01&append=sst,sst_anomaly,level,td
 
 #輸出範例
 
@@ -147,4 +173,4 @@ lon,lat,date,level,sst,sst\_anomaly,td
     -   可下載 CSV 格式 的藍線數據或單點數據。
 -   比較區域限制：
     -   空間範圍：最大 10° x 10°（若超過會有錯誤訊息）。
-    -   時間範圍：最長 10 年。
+    -   時間範圍：最長 10 年。  

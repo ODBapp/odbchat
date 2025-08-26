@@ -1,3 +1,7 @@
+**Marine Heatwaves**
+
+[HTML source from ODB Marine Heatwaves](https://eco.odb.ntu.edu.tw/pub/MHW/?lang=en)
+
 ODB provides the open data of marine heatwave levels, as well as monthly mean sea surface temperature (SST), SST anomalies, and thermal displacements at a 0.25° x 0.25° global resolution.
 
 ## About
@@ -8,11 +12,11 @@ According to the [2022 Intergovernmental Panel on Climate Change (IPCC) report](
 
 \* Thermal Displacement: In the context of MHW, 'thermal displacement' refers to the minimum distance required to follow the long-term average sea surface temperature ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z)). Specifically, thermal displacement signifies the range over which marine heatwaves influence surrounding marine ecosystems, particularly concerning the movement, distribution range, and ecosystem function of marine organisms.
 
-![](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hobday_2018_2.jpg)
+![Marine heatwaves level](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hobday_2018_2.jpg)
 
 Marine heatwaves are classified according to [Hobday et al., 2018](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves). Monthly SST anomalies fall into four levels: below twice the threshold, two to three times the threshold, three to four times the threshold, and above four times the threshold. These levels are labeled as Moderate, Strong, Severe, and Extreme, respectively. Figure adapted from [Hobday et al. (2018)](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves).
 
-![](https://eco.odb.ntu.edu.tw/pub/MHW/assets/time_series_example.jpg)
+![Marine heatwaves time-series](https://eco.odb.ntu.edu.tw/pub/MHW/assets/time_series_example.jpg)
 
 In the waters near Taiwan at longitude 122.625°E and latitude 25.375°N, the time series of the marine heatwave level from January 2020 to now.
 
@@ -45,6 +49,14 @@ By Step B and Step C, get the SST anomalies and determine the occurrence of mari
 \*Thermal displacement is defined as the minimum distance needed to track the long-term average sea surface temperature, as described by Jacox et al. (2020). In its calculation, factors like the feasibility of biological movement are taken into account, preventing unrealistic pathways such as land crossings. The global ocean is segmented into regions with certain areas designated as restricted for movement ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z)). For a comprehensive breakdown of the calculation methods, please see the provided Github link.
 
 ### Results
+
+![2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly)](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_level.jpg)  
+  
+2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly)
+  
+![2025/07 Thermal Displacement caused by Marine Heatwaves](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_td.jpg)
+
+2025/07 Thermal Displacement caused by Marine Heatwaves
 
 ### Reference List
 

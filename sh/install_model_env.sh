@@ -59,4 +59,7 @@ curl -s http://127.0.0.1:8001/completion -d '{
 
 ./chat_loop.sh -m 4b -q "以條列式、科學準確地解釋聖嬰（El Niño）與反聖嬰（La Niña）。請包含：(1) 定義與判別區（Niño‑3.4 海溫異常正/負），(2) Bjerknes 正回饋（風—海溫—熱躍層傾斜），(3) 熱躍層傾斜在聖嬰與反聖嬰的差異，(4) 赤道下傳 Kelvin 波與 Rossby 波角色，(5) Walker/Hadley 環流與降水帶的位移，(6) 對西北太平洋（含臺灣）颱風活動或雨量的典型影響（方向性即可）。" -t 480
 
+# Ingest RAG
+python dev/ingest_mhw.py --root rag --dry-run
+python dev/ingest_mhw.py --root rag --collection odb_mhw_knowledge_v1
 

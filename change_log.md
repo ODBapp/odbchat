@@ -10,3 +10,4 @@
 #### v0.1.4 Simplify map_plot backend helpers: unify legend/colorbar placement into reusable functions; add _nice_ticks; no behavior change intended
 #### v0.1.5 CLI GUI stability: harden matplotlib GUI tick to avoid stalls when closing one of multiple windows; add optional detached plotting via ODBCHAT_PLOT_DETACH=1 so plot windows live independently of the CLI
 #### v0.1.6 Start switching to llama.cpp/build/set-up RAG docs/n1
+#### v0.1.7 Setup RAG docs/n2/rag_cli.py to test ingested RAG doc

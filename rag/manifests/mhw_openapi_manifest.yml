@@ -1,0 +1,11 @@
+---
+source_file: manuals/odb_mhw_openapi.json
+dataset_name: marineheatwave
+collection: mhw
+doc_type: api_spec
+title: ODB MHW API (OpenAPI Spec)
+lang: en
+description: Marine heatwaves OpenAPI specification (ODB)
+tags: [MHW, SST, "SST anomalies", "Thermal Displacement", ODB, OpenAPI]
+grid: 0.25
+timescale: monthly
