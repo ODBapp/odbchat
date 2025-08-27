@@ -2,7 +2,7 @@
 dataset: marineheatwave
 collection: mhw
 doc_type: web_article
-title: Nino SST Indices (Nino 1+2, 3, 3.4, 4; ONI and TNI)
+title: "Nino SST Indices (Nino 1+2, 3, 3.4, 4; ONI and TNI)"
 lang: en
 issuer: "UCAR/NSF NCAR"
 canonical_url: "https://climatedataguide.ucar.edu/climate-data/nino-sst-indices-nino-12-3-34-4-oni-and-tni"
@@ -16,7 +16,21 @@ related_to:
 source_file: "web_docs/md/Nino-SST-Indices_UCAR_html_en.md"
 source_type: web
 version: v1
+purpose: "提供Niño 1,2,3, and 4 regions定義，由於ONI定義於Niño 3.4區域，可供其他文件或程式參考"
+faq: ["Define Niño 3.4 region", "Why we study El Niño events in Niño regions", "聖嬰現象最早在哪裡被觀察到"]
 content: |
+  # Usage Note
+  '''
+    本文件提供Niño 1,2,3, and 4 regions定義，此也關連到由Niño 3.4區域定義聖嬰現象指數(Oceanic Niño Index, ONI)的問題
+    回答Niño 1,2,3, and 4區域如何定義相關問題時應優先引用(列於faq)。
+    請注意：Niño 3.4區域是指和Niño 3,4區域中間的交界區域，範圍並不等同於Niño 3與4區域加總。
+    附註：doc_id: 94eff5435a8e3c4ab192526d1d7d3f81e04f202f 提供了Python程式範例將這些Niño regions在地圖上畫出來。  
+    This document provides the definition of Niño 1,2,3, and 4 regions, which is also related to Oceanic Niño Index (ONI) which is defined in Niño 3.4 region.
+    This document should be referenced first when answering Niño regions related questions (listed in faq).
+    Remark: * The spatial range of the Niño 3.4 region is not the same as those of Niño 3 and Niño 4; it only partially overlaps with them.
+            * A Python example to plot Niño regions on the map is provided in doc_id: 94eff5435a8e3c4ab192526d1d7d3f81e04f202f
+  '''
+
   Nino SST Indices (Nino 1+2, 3, 3.4, 4; ONI and TNI)
   ===================================================
   [HTML source from https://climatedataguide.ucar.edu/](https://climatedataguide.ucar.edu/climate-data/nino-sst-indices-nino-12-3-34-4-oni-and-tni)
@@ -29,7 +43,7 @@ content: |
   
   There are several indices used to monitor the tropical Pacific, all of which are based on sea surface temperature (SST) anomalies averaged across a given region.  Usually the anomalies are computed relative to a base period of 30 years.  The Niño 3.4 index and the Oceanic Niño Index (ONI) are the most commonly used indices to define El Niño and La Niña events.  Other indices are used to help characterize the unique nature of each event. A discussion of El Niño and its impacts is provided in the Expert Guidance (below) by Dr. Kevin Trenberth.
   
-  ![](/sites/default/files/users/dschneid/key_figures_428.png)The numbers of the Niño 1,2,3, and 4 regions correspond with the labels assigned to ship tracks that crossed these regions.  Data from these tracks enabled the historic records of El Niño to be carried back in time to 1949, as discussed in a classic study by Rasmusson and Carpenter (1982).
+  ![ONI index timeseries from 1950-2015](https://climatedataguide.ucar.edu/sites/default/files/users/dschneid/key_figures_428.png)The numbers of the Niño 1,2,3, and 4 regions correspond with the labels assigned to ship tracks that crossed these regions.  Data from these tracks enabled the historic records of El Niño to be carried back in time to 1949, as discussed in a classic study by Rasmusson and Carpenter (1982).
   
   Niño 1+2 (0-10S, 90W-80W):  The Niño 1+2 region is the smallest and eastern-most of the Niño SST regions, and corresponds with the region of coastal South America where El Niño was first recognized by the local populations.  This index tends to have the largest variance of the Niño SST indices.
   
@@ -159,7 +173,7 @@ content: |
   Key Figures
   -----------
   
-  [![ONI timeseries](/sites/default/files/styles/square/public/2022-03/oni.monthly.smoo_stro.png?itok=o7mcRm0R)](https://climatedataguide.ucar.edu/sites/default/files/styles/extra_large/public/2022-03/oni.monthly.smoo_stro.png?itok=KX4FZyFw "The Oceanic Niño Index (ONI) shows warm (red) and cold (blue) phases of abnormal sea surface temperatures in the tropical Pacific Ocean (contributed by K Trenberth)
+  [![ONI timeseries](https://climatedataguide.ucar.edu/sites/default/files/styles/square/public/2022-03/oni.monthly.smoo_stro.png?itok=o7mcRm0R)](https://climatedataguide.ucar.edu/sites/default/files/styles/extra_large/public/2022-03/oni.monthly.smoo_stro.png?itok=KX4FZyFw "The Oceanic Niño Index (ONI) shows warm (red) and cold (blue) phases of abnormal sea surface temperatures in the tropical Pacific Ocean (contributed by K Trenberth)
   ")
   
   The Oceanic Niño Index (ONI) shows warm (red) and cold (blue) phases of abnormal sea surface temperatures in the tropical Pacific Ocean (contributed by K Trenberth)
@@ -174,12 +188,12 @@ content: |
   
   Outline of regions used for assorted Nino indices. (Climate Data Guide; D. Shea)
   
-  [![](https://climatedataguide.ucar.edu/sites/default/files/styles/square/public/2022-03/indices_oni_2_1_lg.png?itok=G0yOV4Tt)](https://climatedataguide.ucar.edu/sites/default/files/styles/extra_large/public/2022-03/indices_oni_2_1_lg.png?itok=dDyFIHNp "ONI: Jan 1870 - Feb 2018 (Climate Data Guide; D. Shea)
+  [![ONI: Jan 1870 - Feb 2018 ](https://climatedataguide.ucar.edu/sites/default/files/styles/square/public/2022-03/indices_oni_2_1_lg.png?itok=G0yOV4Tt)](https://climatedataguide.ucar.edu/sites/default/files/styles/extra_large/public/2022-03/indices_oni_2_1_lg.png?itok=dDyFIHNp "ONI: Jan 1870 - Feb 2018 (Climate Data Guide; D. Shea)
   ")
   
   ONI: Jan 1870 - Feb 2018 (Climate Data Guide; D. Shea)
   
-  [![](https://climatedataguide.ucar.edu/sites/default/files/styles/square/public/2022-03/indices_oni_2_2_lg.png?itok=iDCchq4p)](https://climatedataguide.ucar.edu/sites/default/files/styles/extra_large/public/2022-03/indices_oni_2_2_lg.png?itok=Zew3VK_4 "ONI: Jan 1950 - Feb 2018 with "moderate" and "strong" El Nino and La Nina marked (Climate Data Guide; D. Shea)
+  [![ONI: Jan 1950 - Feb 2018](https://climatedataguide.ucar.edu/sites/default/files/styles/square/public/2022-03/indices_oni_2_2_lg.png?itok=iDCchq4p)](https://climatedataguide.ucar.edu/sites/default/files/styles/extra_large/public/2022-03/indices_oni_2_2_lg.png?itok=Zew3VK_4 "ONI: Jan 1950 - Feb 2018 with "moderate" and "strong" El Nino and La Nina marked (Climate Data Guide; D. Shea)
   ")
   
   ONI: Jan 1950 - Feb 2018 with "moderate" and "strong" El Nino and La Nina marked (Climate Data Guide; D. Shea)

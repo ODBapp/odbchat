@@ -8,14 +8,25 @@ canonical_url: "https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/en
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "c4aca131c497500a668336dacb65f08ade88077a"
-tags: ["ENSO", "El Niño", "Oceanic Niño Index", "SST anomalies", data, basics]
+tags: ["ENSO", "El Niño", "Oceanic Niño Index", "SST anomalies", data, basics, 聖嬰現象指數]
 related_to:
   - doc_id: ["4b60022c85f6a8bc3253552ba03f695e996519c5", "94eff5435a8e3c4ab192526d1d7d3f81e04f202f"]
   - collection: "mhw"
 source_file: "web_docs/md/oni_NOAA_html_en.md"
 source_type: web
 version: v1
+purpose: "提供Oceanic Niño Index(ONI)定義與從1950年迄今(2025年5-6-7月)的Oceanic Niño Index數值資料"
+faq: ["ONI指數如何定義", "如何查到哪一年發生的是聖嬰或反聖嬰現象", "Identify El Niño or La Niña years using ONI values"]
 content: |
+  # Usage Note
+  '''
+    本文件提供太平洋海域的聖嬰現象指數(Oceanic Niño Index, ONI)如何定義，以及
+    在下方的表格(markdown格式)中詳列了1950年迄今(2025年5-6-7月)的Oceanic Niño Index數值資料
+    回答ONI相關問題時應優先引用(列於faq)。
+    This document provides Oceanic Niño Index (ONI) definition and values (1950-2025(Mar-June-July, MJJ), listed in markdown table) and 
+    should be referenced first when answering ONI-related questions (listed in faq).
+  '''
+
   **Cold & Warm Episodes by Season**
   
   [HTML source from NOAA/National Weather Service](https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/ensostuff/ONI_v5.php)

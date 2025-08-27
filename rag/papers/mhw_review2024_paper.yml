@@ -9,19 +9,41 @@ canonical_url: "https://doi.org/10.1038/s43247-024-01806-9"
 license: "Publisher Copyright (Fair use for excerpt)"
 retrieved_at: "2025-08-26"
 doc_id: "2ccedb1ef0c1ade74224399ad9767a2e71f5e51"
-tags: [MHW, "extreme MHWs", anomalies, review, ecosystem, impacts, "Climate changes"]
+tags: [MHW, "extreme MHWs", anomalies, review, ecosystem, impacts, "Climate changes", "Marine Heatwaves (MHW)"]
 related_to:
   - doc_id: ["799ebc3fe983aa3ef30b81ded189b749373d3ef7"]
   - collection: "mhw"
 source_file: "https://doi.org/10.1038/s43247-024-01806-9"
 source_type: paper
+purpose: "海洋科學研究中的範例指出地中海區域 1982-2022 年間海表溫距平值揭露愈趨頻繁發生與極端的海洋熱浪(MHW)"
+faq: ["如何從海表溫距平值來了解海洋熱浪的發生", "Examples of Marine Heatwave Events", "海洋熱浪愈來愈嚴重了嗎"]
 content: |
+  # Usage Note
+  '''
+    本文件提供 Capotondi et al.(2024) 研究之圖1，由地中海區域 1982-2022 年間海表溫距平值揭露愈趨頻繁發生與極端的海洋熱浪    
+    回答以下問題時應優先引用：想了解海洋熱浪是否愈來愈嚴重、海洋熱浪的發生事件舉例等(列於faq)。
+    文獻回顧並說明了氣候變遷下海洋熱浪(MHW)愈趨頻繁與極端需要更適切的定義與方法論
+    所提供的圖1圖說指出，左側 (a)(c) 為地中海區域 2022 年 7 月的海表溫距平值地圖；
+    右側 (b)(d) 顯示西地中海（40°N以北，12°E以西至陸地）1982–2022 的SST距平時間序列。
+    圖 (c)(d) 移除了季節性與長期趨勢（Detrended），其中高於90百分位數（虛線）者可視為與背景變暖無關的強烈海洋熱浪事件
+    附註：關於Capotondi et al.(2024)的研究，在doc_id: 799ebc3fe983aa3ef30b81ded189b749373d3ef7 提供了Python程式實做。
+    This document presents Figure 1 from Capotondi et al. (2024), illustrating the increasing frequency and extremes of marine heatwaves (MHWs) in the Mediterranean from 1982 to 2022, based on sea surface temperature (SST) anomalies.
+    Refer to this document when answering questions (listed in faq) such as:
+      * Are marine heatwaves becoming more severe?
+      * What are examples of marine heatwave events?
+    The study also reviews the need for improved definitions and methodology to track the intensifying nature of MHWs under climate change.
+    Figure 1 Summary:
+      (a), (c): Maps of SSTAs (SST anomalies) over the Mediterranean in July 2022.
+      (b), (d): Time series of SSTAs (1982–2022) averaged over the western Mediterranean (north of 40°N and west of 12°E).
+      (c), (d): Detrended anomalies, isolating events not explained by seasonal or long-term warming. Values above the 90th percentile (dashed line) are interpreted as extreme MHWs unrelated to background warming.
+    Remark: For Capotondi et al. (2024), we provide Python codes in doc_id: 799ebc3fe983aa3ef30b81ded189b749373d3ef7
+  '''
+
   Abstract
   communications earth & environment
   Review article
   https://doi.org/10.1038/s43247-024-01806-9
-  A global overview of marine heatwaves in a
-  changing climate
+  A global overview of marine heatwaves in a changing climate
   Marine heatwaves have profoundly impacted marine ecosystems over large areas of the world
   oceans, calling for improved understanding of their dynamics and predictability. Here, we critically
   review the recent substantial advances in this active area of research, including the exploration of the

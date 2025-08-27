@@ -4,12 +4,34 @@ document_type: data_summary
 dataset_name: marineheatwave
 collection: mhw
 type: Zarr (v2)
+doc_id: "b7cea35aac3358af2e52d9f9079779bfdda0fee7"
 grid: 0.25
 timescale: monthly
-related_api: manuals/odb_mhw_openapi.json
-tags: [SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, 全球海洋熱浪]
+retrieved_at: "2025-08-25T10:00:00Z"
+related_to:
+  - doc_id: ["d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
+  - collection: "mhw"
+related_api: manuals/odb_mhw_openapi.yml
+tags: [MHW, SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, 全球海洋熱浪]
 description: "Summary of Zarr metadata for Marine Heatwaves (MHW) 0.25 degree monthly data evaluated from 0.25-degree gridded NOAA OISST v2.1, compiled by Ocean Data Bank (ODB)"
+purpose: "The Zarr store the dataset where ODB MHW API gets data from. ODB MHW API從此Zarr store調用資料. The content is the metadata of the Zarr store, so that we can know the longitude (lon)/latitude (lat) and temporal (date) range of ODB MHW API can get. We also know the data variables (td: Thermal Displacement, sst: Sea surface temperature (SST), sst_anomaly (SST anomalies), and level (MHW levels) stored in this Zarr dataset."
+faq: ["ODB MHW API資料的時空範圍與尺度?", "ODB MHW API如何調用資料", "ODB MHW API包含什麼資料、變數或參數"]
 content: |
+  # Usage Note
+  '''
+    本文件提供 ODB MHW API 調用資料時所使用的Zarr資料集的metadata，提供海洋熱浪資料集包括的經緯度(lon, lat)與時間(date)範圍，以及所包含的資料變數，
+    共有td: 海洋熱浪引起的熱位移, sst: 海水表面溫度 (SST), sst_anomaly: 海表溫距平值(異常值; SST anomalies), and level: 海洋熱浪等級，
+    回答ODB MHW API包含的資料問題(列於faq)應優先引用。
+    This document provides the metadata of the Zarr dataset used by the ODB Marine Heatwaves (MHW) API. 
+    It describes the spatial (lon, lat) and temporal (date) coverage, as well as the included variables: 
+    td (Thermal Displacement), sst (Sea Surface Temperature), sst_anomaly (SST anomalies), and level (MHW levels). 
+    For questions about the ODB MHW API data (listed in faq), please refer to this document first.
+    附註：ODB全球海洋熱浪資料庫的更新時間大約為每月18日（試NOAA OISST資料集實際更新時間而定，有時會延遲），更新至上個月的海洋熱浪資料，
+          以retrieved_at 2025-08-25為例，資料集維度 date 最晚日期即為 2025-07-01，亦即更新至上個月。
+    Remark: The ODB global MHW database is updated around the 18th of each month (depending on the actual update of the NOAA OISST dataset, sometimes delayed). 
+            Each update covers data up to the previous month. For example, with retrieved_at = 2025-08-25, the latest date in this dataset is 2025-07-01, meaning data is available up to the previous month.    
+  '''
+
   <xarray.Dataset> Size: 15GB
   Dimensions:      (date: 523, lat: 720, lon: 1440)
   Coordinates:

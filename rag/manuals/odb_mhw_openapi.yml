@@ -1,5 +1,5 @@
 ---
-source_file: manuals/odb_mhw_openapi.json
+source_file: https://api.odb.ntu.edu.tw/hub/swagger?node=odb_mhw_v1
 dataset_name: marineheatwave
 collection: mhw
 doc_type: api_spec
@@ -7,10 +7,306 @@ doc_id: "d971ef8bbc81997eae74ee0e555588a6526b0ea1"
 title: ODB MHW API (OpenAPI Spec)
 lang: en
 description: Marine heatwaves OpenAPI specification (ODB)
-tags: [MHW, SST, "SST anomalies", "Thermal Displacement", ODB, OpenAPI]
+tags: [MHW, SST, "SST anomalies", "Thermal Displacement", ODB, OpenAPI, "Marine Heatwaves (MHW)", 全球海洋熱浪, spec]
 grid: 0.25
 timescale: monthly
-depends_on:
-  - data_summaries/mhw_zarr_metadata.yml
+related_to:
+  - doc_id: ["b7cea35aac3358af2e52d9f9079779bfdda0fee7"]
+  - collection: "mhw"
+purpose: "說明 ODB MHW API 如何使用"
+faq: ["如何使用 ODB MHW API?", "如何取得全球海洋熱浪資料?", "How to call ODB MHW API endpoint to get timeseries data"]
 content: |
-  {"openapi":"3.1.0","servers":[{"url":"https://eco.odb.ntu.edu.tw"}],"components":{"schemas":{"HTTPValidationError":{"properties":{"detail":{"items":{"$ref":"#/components/schemas/ValidationError"},"type":"array","title":"Detail"}},"type":"object","title":"HTTPValidationError"},"MHWResponse":{"properties":{"lon":{"type":"number","title":"Lon"},"lat":{"type":"number","title":"Lat"},"date":{"type":"string","format":"date","title":"Date"},"level":{"anyOf":[{"type":"number"},{"type":"null"}],"title":"Level"},"sst_anomaly":{"anyOf":[{"type":"number"},{"type":"null"}],"title":"Sst Anomaly"},"td":{"anyOf":[{"type":"number"},{"type":"null"}],"title":"Td"}},"type":"object","required":["lon","lat","date","level","sst_anomaly","td"],"title":"MHWResponse"},"ValidationError":{"properties":{"loc":{"items":{"anyOf":[{"type":"string"},{"type":"integer"}]},"type":"array","title":"Location"},"msg":{"type":"string","title":"Message"},"type":{"type":"string","title":"Error Type"}},"type":"object","required":["loc","msg","type"],"title":"ValidationError"}}},"info":{"title":"Open API of Marine Heatwaves","description":"Marine heatwaves (MHWs) evaluated from 0.25-degree gridded NOAA OISST v2.1, compiled by ODB, Taiwan. \nReference: Jacox, Alexander, Bograd, and Scott (2020), Thermal Displacement by Marine Heatwaves, Nature, 584, 82–86, doi:10.1038/s41586-020-2534-z","version":"1.0.0"},"paths":{"/api/mhw":{"get":{"tags":["Marine Heatwave"],"summary":"Query MHW data as JSON","description":"Query MHW data by longitude/latitude/date (in JSON), providing monthly marine heatwave levels, sea surface temperature (SST), SST anomalies, and thermal displacements at a 0.25° x 0.25° global resolution. See more: https://eco.odb.ntu.edu.tw/pub/MHW\n\n#### Usage\n* One-point MHWs without time-span limitation: e.g. /api/mhw?lon0=135&lat0=15\n* Bounding-box <= 10 x 10 in degrees: 10-years time-span limitation: e.g. /api/mhw?lon0=135&lon1=140&lat0=15&lat1=30&start=2013-01-01 (data from 2013/01/01 to 2022/12/01)\n* Bounding-box > 10 x 10 in degrees: 1-year time-span limitation: e.g. /api/mhw?lon0=135&lon1=150&lat0=15&lat1=30&start=2013-01-01 (data from 2013/01/01 to 2013/12/01)\n* Bounding-box > 90 x 90 in degrees: 1-month time-span limitation: e.g. /api/mhw?lon0=-180&lon1=180&lat0=-90&lat1=90&start=2013-01-01 (data of 2013/01/01)","operationId":"read_mhw_api_mhw_get","parameters":[{"name":"lon0","in":"query","required":true,"schema":{"type":"number","description":"Minimum longitude, range: [-180, 180]","title":"Lon0"},"description":"Minimum longitude, range: [-180, 180]"},{"name":"lat0","in":"query","required":true,"schema":{"type":"number","description":"Minimum latitude, range: [-90, 90]","title":"Lat0"},"description":"Minimum latitude, range: [-90, 90]"},{"name":"lon1","in":"query","required":false,"schema":{"anyOf":[{"type":"number"},{"type":"null"}],"description":"Maximum longitude, range: [-180, 180]","title":"Lon1"},"description":"Maximum longitude, range: [-180, 180]"},{"name":"lat1","in":"query","required":false,"schema":{"anyOf":[{"type":"number"},{"type":"null"}],"description":"Maximum latitude, range: [-90, 90]","title":"Lat1"},"description":"Maximum latitude, range: [-90, 90]"},{"name":"start","in":"query","required":false,"schema":{"anyOf":[{"type":"string","format":"date"},{"type":"null"}],"description":"Start date of MHWs to query, minimum is 1982-01-01","title":"Start"},"description":"Start date of MHWs to query, minimum is 1982-01-01"},{"name":"end","in":"query","required":false,"schema":{"anyOf":[{"type":"string","format":"date"},{"type":"null"}],"description":"End date of MHWs to query, maximum is one month before the current date","title":"End"},"description":"End date of MHWs to query, maximum is one month before the current date"},{"name":"append","in":"query","required":false,"schema":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'","title":"Append"},"description":"Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'"}],"responses":{"200":{"description":"Successful Response","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/MHWResponse"},"title":"Response Read Mhw Api Mhw Get"}}}},"422":{"description":"Validation Error","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HTTPValidationError"}}}}}}},"/api/mhw/csv":{"get":{"tags":["Marine Heatwave"],"summary":"Query MHW data as CSV","description":"Query MHW data by longitude/latitude/date (in csv), providing monthly marine heatwave levels, sea surface temperature (SST), SST anomalies, and thermal displacements at a 0.25° x 0.25° global resolution. See more: https://eco.odb.ntu.edu.tw/pub/MHW\n\n#### Usage\n* One-point MHWs without time-span limitation: e.g. /api/mhw/csv?lon0=135&lat0=15\n* Bounding-box <= 10 x 10 in degrees: 10-years time-span limitation: e.g. /api/mhw/csv?lon0=135&lon1=140&lat0=15&lat1=30&start=2013-01-01 (data from 2013/01/01 to 2022/12/01)\n* Bounding-box > 10 x 10 in degrees: 1-year time-span limitation: e.g. /api/mhw/csv?lon0=135&lon1=150&lat0=15&lat1=30&start=2013-01-01 (data from 2013/01/01 to 2013/12/01)\n* Bounding-box > 90 x 90 in degrees: 1-month time-span limitation: e.g. /api/mhw/csv?lon0=-180&lon1=180&lat0=-90&lat1=90&start=2013-01-01 (data of 2013/01/01)","operationId":"read_mhw_csv_api_mhw_csv_get","parameters":[{"name":"lon0","in":"query","required":true,"schema":{"type":"number","description":"Minimum longitude, range: [-180, 180]","title":"Lon0"},"description":"Minimum longitude, range: [-180, 180]"},{"name":"lat0","in":"query","required":true,"schema":{"type":"number","description":"Minimum latitude, range: [-90, 90]","title":"Lat0"},"description":"Minimum latitude, range: [-90, 90]"},{"name":"lon1","in":"query","required":false,"schema":{"anyOf":[{"type":"number"},{"type":"null"}],"description":"Maximum longitude, range: [-180, 180]","title":"Lon1"},"description":"Maximum longitude, range: [-180, 180]"},{"name":"lat1","in":"query","required":false,"schema":{"anyOf":[{"type":"number"},{"type":"null"}],"description":"Maximum latitude, range: [-90, 90]","title":"Lat1"},"description":"Maximum latitude, range: [-90, 90]"},{"name":"start","in":"query","required":false,"schema":{"anyOf":[{"type":"string","format":"date"},{"type":"null"}],"description":"Start date of MHWs to query, minimum is 1982-01-01","title":"Start"},"description":"Start date of MHWs to query, minimum is 1982-01-01"},{"name":"end","in":"query","required":false,"schema":{"anyOf":[{"type":"string","format":"date"},{"type":"null"}],"description":"End date of MHWs to query, maximum is one month before the current date","title":"End"},"description":"End date of MHWs to query, maximum is one month before the current date"},{"name":"append","in":"query","required":false,"schema":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'","title":"Append"},"description":"Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'"}],"responses":{"200":{"description":"Successful Response"},"422":{"description":"Validation Error","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HTTPValidationError"}}}}}}}}}
+  # Usage Note
+  '''
+    本文件提供 ODB MHW API (海洋熱浪開放應用程式介面) 的使用說明與規格 (Open API specification, OAS; Swagger documentation)，
+    回答如何以程式或瀏覽器調用全球海洋熱浪資料，或如何使用ODB MHW API問題(列於faq)時應優先引用。
+    以下API規格書以 OpenAPI 3.1 https://swagger.io/specification/ 標準描述，格式為YAML。包含詳細的API端點、參數、規格、與回應之描述。
+    This document provides the usage guide and specifications for the ODB MHW API (Application Programming Interface), 
+    serving as the primary reference for programmatic or browser-based access to global MHW data (listed in faq).
+    The API specification follows the OpenAPI 3.1 standard (https://swagger.io/specification/), in YAML format, 
+    with detailed descriptions of endpoints, parameters, specifications, and responses.
+  '''
+
+---
+openapi: 3.1.0
+servers:
+  - url: https://eco.odb.ntu.edu.tw
+components:
+  schemas:
+    MHWResponse:
+      properties:
+        lon:
+          type: number
+          title: Lon
+        lat:
+          type: number
+          title: Lat
+        date:
+          type: string
+          format: date
+          title: Date
+        level:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Level
+        sst_anomaly:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Sst Anomaly
+        td:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Td
+      type: object
+      required:
+        - lon
+        - lat
+        - date
+        - level
+        - sst_anomaly
+        - td
+      title: MHWResponse
+info:
+  title: Open API of Marine Heatwaves
+  description: >-
+    Marine heatwaves (MHWs) evaluated from 0.25-degree gridded NOAA OISST v2.1,
+    compiled by ODB, Taiwan. 
+
+    Reference: Jacox, Alexander, Bograd, and Scott (2020), Thermal Displacement
+    by Marine Heatwaves, Nature, 584, 82–86, doi:10.1038/s41586-020-2534-z
+  version: 1.0.0
+paths:
+  /api/mhw:
+    get:
+      tags:
+        - Marine Heatwave
+      summary: Query MHW data as JSON
+      description: >-
+        Query MHW data by longitude/latitude/date (in JSON), providing monthly
+        marine heatwave levels, sea surface temperature (SST), SST anomalies,
+        and thermal displacements at a 0.25° x 0.25° global resolution. See
+        more: https://eco.odb.ntu.edu.tw/pub/MHW
+
+
+        #### Usage
+
+        * One-point MHWs without time-span limitation: e.g.
+        /api/mhw?lon0=135&lat0=15
+
+        * Bounding-box <= 10 x 10 in degrees: 10-years time-span limitation:
+        e.g. /api/mhw?lon0=135&lon1=140&lat0=15&lat1=30&start=2013-01-01 (data
+        from 2013/01/01 to 2022/12/01)
+
+        * Bounding-box > 10 x 10 in degrees: 1-year time-span limitation: e.g.
+        /api/mhw?lon0=135&lon1=150&lat0=15&lat1=30&start=2013-01-01 (data from
+        2013/01/01 to 2013/12/01)
+
+        * Bounding-box > 90 x 90 in degrees: 1-month time-span limitation: e.g.
+        /api/mhw?lon0=-180&lon1=180&lat0=-90&lat1=90&start=2013-01-01 (data of
+        2013/01/01)
+      operationId: read_mhw_api_mhw_get
+      parameters:
+        - name: lon0
+          in: query
+          required: true
+          schema:
+            type: number
+            description: 'Minimum longitude, range: [-180, 180]'
+            title: Lon0
+          description: 'Minimum longitude, range: [-180, 180]'
+        - name: lat0
+          in: query
+          required: true
+          schema:
+            type: number
+            description: 'Minimum latitude, range: [-90, 90]'
+            title: Lat0
+          description: 'Minimum latitude, range: [-90, 90]'
+        - name: lon1
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: number
+              - type: 'null'
+            description: 'Maximum longitude, range: [-180, 180]'
+            title: Lon1
+          description: 'Maximum longitude, range: [-180, 180]'
+        - name: lat1
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: number
+              - type: 'null'
+            description: 'Maximum latitude, range: [-90, 90]'
+            title: Lat1
+          description: 'Maximum latitude, range: [-90, 90]'
+        - name: start
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+                format: date
+              - type: 'null'
+            description: Start date of MHWs to query, minimum is 1982-01-01
+            title: Start
+          description: Start date of MHWs to query, minimum is 1982-01-01
+        - name: end
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+                format: date
+              - type: 'null'
+            description: >-
+              End date of MHWs to query, maximum is one month before the current
+              date
+            title: End
+          description: >-
+            End date of MHWs to query, maximum is one month before the current
+            date
+        - name: append
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            description: >-
+              Data fields to append, separated by commas. Allowed fields: 'sst',
+              'sst_anomaly', 'level', 'td'
+            title: Append
+          description: >-
+            Data fields to append, separated by commas. Allowed fields: 'sst',
+            'sst_anomaly', 'level', 'td'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MHWResponse'
+                title: Response Read Mhw Api Mhw Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/mhw/csv:
+    get:
+      tags:
+        - Marine Heatwave
+      summary: Query MHW data as CSV
+      description: >-
+        Query MHW data by longitude/latitude/date (in csv), providing monthly
+        marine heatwave levels, sea surface temperature (SST), SST anomalies,
+        and thermal displacements at a 0.25° x 0.25° global resolution. See
+        more: https://eco.odb.ntu.edu.tw/pub/MHW
+
+
+        #### Usage
+
+        * One-point MHWs without time-span limitation: e.g.
+        /api/mhw/csv?lon0=135&lat0=15
+
+        * Bounding-box <= 10 x 10 in degrees: 10-years time-span limitation:
+        e.g. /api/mhw/csv?lon0=135&lon1=140&lat0=15&lat1=30&start=2013-01-01
+        (data from 2013/01/01 to 2022/12/01)
+
+        * Bounding-box > 10 x 10 in degrees: 1-year time-span limitation: e.g.
+        /api/mhw/csv?lon0=135&lon1=150&lat0=15&lat1=30&start=2013-01-01 (data
+        from 2013/01/01 to 2013/12/01)
+
+        * Bounding-box > 90 x 90 in degrees: 1-month time-span limitation: e.g.
+        /api/mhw/csv?lon0=-180&lon1=180&lat0=-90&lat1=90&start=2013-01-01 (data
+        of 2013/01/01)
+      operationId: read_mhw_csv_api_mhw_csv_get
+      parameters:
+        - name: lon0
+          in: query
+          required: true
+          schema:
+            type: number
+            description: 'Minimum longitude, range: [-180, 180]'
+            title: Lon0
+          description: 'Minimum longitude, range: [-180, 180]'
+        - name: lat0
+          in: query
+          required: true
+          schema:
+            type: number
+            description: 'Minimum latitude, range: [-90, 90]'
+            title: Lat0
+          description: 'Minimum latitude, range: [-90, 90]'
+        - name: lon1
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: number
+              - type: 'null'
+            description: 'Maximum longitude, range: [-180, 180]'
+            title: Lon1
+          description: 'Maximum longitude, range: [-180, 180]'
+        - name: lat1
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: number
+              - type: 'null'
+            description: 'Maximum latitude, range: [-90, 90]'
+            title: Lat1
+          description: 'Maximum latitude, range: [-90, 90]'
+        - name: start
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+                format: date
+              - type: 'null'
+            description: Start date of MHWs to query, minimum is 1982-01-01
+            title: Start
+          description: Start date of MHWs to query, minimum is 1982-01-01
+        - name: end
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+                format: date
+              - type: 'null'
+            description: >-
+              End date of MHWs to query, maximum is one month before the current
+              date
+            title: End
+          description: >-
+            End date of MHWs to query, maximum is one month before the current
+            date
+        - name: append
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            description: >-
+              Data fields to append, separated by commas. Allowed fields: 'sst',
+              'sst_anomaly', 'level', 'td'
+            title: Append
+          description: >-
+            Data fields to append, separated by commas. Allowed fields: 'sst',
+            'sst_anomaly', 'level', 'td'
+      responses:
+        '200':
+          description: Successful Response

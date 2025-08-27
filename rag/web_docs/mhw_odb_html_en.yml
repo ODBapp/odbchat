@@ -11,14 +11,23 @@ retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "ddba171bda668c60390ee6fab602b037efb73539"
 tags: ["Marine Heatwaves", "Global Warming", "ODB", "Open Data", "SST anomalies"]
 related_to:
-  - doc_id: ["e92105f573812706c700e35c0d1eee44e62ee8cc", "d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
+  - doc_id: ["e92105f573812706c700e35c0d1eee44e62ee8cc", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "4aa0def856dfdebb205135c3a9d5a76a55110e38"]
   - collection: "mhw"
 depends_on:
-  - manuals/odb_mhw_openapi.json
+  - manuals/odb_mhw_openapi.yml
 source_file: "web_docs/md/mhw_odb_html_en.md"
 source_type: web
 version: v1
+purpose: "To introduce how the ODB Global Marine Heatwave (MHW) Database evaluates MHW events, presents MHW data, provides open data downloads, OpenAPI access, and usage on the ODB Hidy Viewer"
+faq: ["How to download marine heatwave data", "Visualize SST anomalies or marine heatwaves", "How to use the graphical interface to find and display ocean data"]
 content: |
+  # Usage Note
+  '''
+    This document covers the content of the ODB Marine Heatwave website (MHW).  
+    It should be the primary reference when answering ODB MHW-related questions (listed in faq).  
+    Note: This is the English version. For Tradition Chinese version, see doc_id: e92105f573812706c700e35c0d1eee44e62ee8cc.
+  '''
+
   **Marine Heatwaves**
   
   [HTML source from ODB Marine Heatwaves](https://eco.odb.ntu.edu.tw/pub/MHW/?lang=en)

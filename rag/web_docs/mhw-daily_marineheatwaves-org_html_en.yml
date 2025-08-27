@@ -9,15 +9,26 @@ canonical_url: "https://www.marineheatwaves.org/mhw-overview.html"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "732c50a23e9ebdf5d9185075470d26c4f9aff86c"
-tags: ["Marine Heatwaves", "Global Warming"]
+tags: [MHW, "Marine Heatwaves (MHW)", "Global Warming"]
 related_to:
   - doc_id: ["c20f65c8a96a366379cfab3058698a98b3717444", "ddba171bda668c60390ee6fab602b037efb73539"]
   - collection: "mhw"
 source_file: "web_docs/md/mhw-daily_marineheatwaves-org_html_en.md"
 source_type: web
 version: v1
+purpose: "利用逐日海洋熱浪(daily MHWs)計算每年海洋熱浪天數的時間序列，提供海洋熱浪在全球發生現況與影響等相關科普知識"
+faq: ["如何定義逐日海洋熱浪(daily MHW)", "How to measure annual MHW days", "What about the future under such warming scenario"]
 content: |
-  **Marine Heatwaves Explained**
+  # Usage Note
+  '''
+    本文件提供較常見的每日(daily)海洋熱浪(MHW)定義、計算方法、統計值與現況等綜合介紹，在回答海洋熱浪相關科普問題可優先引用(列於faq)。
+    注意：本文的海洋熱浪定義，與ODB依據Jacox et al.(2020)的研究所使用的每月(monthly)海洋熱浪定義不同，請參考doc_id: 4aa0def856dfdebb205135c3a9d5a76a55110e38
+    This document provides a general introduction to the commonly used definition of daily marine heatwaves (MHW), including calculation methods, statistics, and current status. 
+    It should be the primary reference for answering MHW-related popsci topics (listed in faq).
+    Note: The MHW definition used here differs from the monthly definition adopted by ODB based on Jacox et al. (2020). Refer to doc_id: 4aa0def856dfdebb205135c3a9d5a76a55110e38. 
+  '''  
+  
+  Marine Heatwaves Explained
   
   [HTML source from marineheatwaves.org](https://www.marineheatwaves.org/mhw-overview.html)
   
@@ -25,24 +36,18 @@ content: |
   
   We know that heatwaves occur in the atmosphere. We are all familiar with these extended periods of excessively hot weather. However, periods of extreme heat also occur in the ocean and these are known as marine heatwaves, or MHWs. These extreme warming events can have significant impacts on marine ecosystems as well as human wellbeing and regional economies. MHWs can occur in any season - they are defined based on differences with expected sea temperatures for the location and time of year.  
   
-  ![Picture](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/mhws-around-the-world_orig.png)
+  ![MHW events around the world](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/mhws-around-the-world_orig.png)
   
   ## **How do we measure marine heatwaves?**
   
   Our group developed a definition of MHWs (Hobday et al. 2016), which has been widely adopted by researchers and other users. A MHW is defined as a period when seawater temperatures exceed a seasonally-varying threshold (usually the 90th percentile) for at least 5 consecutive days. Successive events with gaps of 2 days or less are considered part of the same MHW. In a subsequent study (Hobday et al. 2018) we extended the definition to introduce categories of severity, based on multiples of the threshold being exceeded. 
-  ![Picture](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/mhw-definition-wcats_orig.png) 
+  ![daily MHW definition](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/mhw-definition-wcats_orig.png) 
   
-  **CODE:** Links to 
+  [Python](https://github.com/ecjoliver/marineHeatWaves)
   
-  [<u>Python</u>](https://github.com/ecjoliver/marineHeatWaves)
+  implementations of the Marine Heatwave definition of Hobday et al. (2016).
   
-  and
-  
-  <u><a href="https://robwschlegel.github.io/heatwaveR/index.html" target="_blank">R</a></u>
-  
-   implementations of the Marine Heatwave definition of Hobday et al. (2016).  
-  
-  ![Picture](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/marineheatwaves-infographic-2500x4000_orig.jpg)
+  ![Marine Heatwaves Facts](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/marineheatwaves-infographic-2500x4000_orig.jpg)
   
   ## **Marine heatwave properties**
   
@@ -54,23 +59,11 @@ content: |
   
   MHWs are caused by a wide range of processes, which vary in their importance between regions and events. The most common drivers of MHWs include _ocean currents_ which can build up areas of warm water and _air-sea heat flux_, or warming through the ocean surface from the atmosphere. Winds can enhance or suppress the warming in a MHW, and climate modes like El Niño can change the likelihood of events occurring in certain regions. 
   
-  
   ## **How have marine heatwaves changed?**
   
   The oceans are warming at an unprecedented rate. Global sea surface temperatures have warmed by nearly 1°C since 1900 (IPCC AR6). This warming in turn increases the likelihood of MHWs occurring. While ecosystems have evolved within a certain coping range, and can adapt to conditions slightly outside that range, MHWs manifest as extreme events that lead to ecosystem vulnerabilities. In a warmer climate we are more likely to experience these vulnerability-causing extremes. | ## **what about the future?**
   
   The Intergovernmental Panel on Climate Change (IPCC) 6th assessment report projects that the global ocean will continue to warm well into the 21st century. The warming in the upper ocean is projected to be between 0.5°C and 2.5°C by 2100. We can therefore expect a continuation, and possibly acceleration, of the historic warming-driven changes in MHWs. Ultimately, without improved global action to tackle climate change, the oceans will continue to warm leading to more intense and frequent MHWs, with consequences for marine life and human societies. 
   
-  ![Picture](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/time-series_orig.png)
+  ![Globally averaged annual MHW days timeseries](https://www.marineheatwaves.org/uploads/1/1/0/5/110558923/time-series_orig.png)
   
-  **Further reading**
-  
-  Hobday et al. (2016), _A hierarchical approach to defining marine heatwaves_, Progress in Oceanography, 141, pp. 227-238, 10.1016/j.pocean.2015.12.014
-  
-   Hobday et al. (2018), _Categorizing and naming marine heatwaves_, Oceanography, 31, pp. 162-173, [https://www.jstor.org/stable/26542662](https://www.jstor.org/stable/26542662)
-  
-   Smale et al (2019), _Marine heatwaves threaten global biodiversity and the provision of ecosystem services_, Nature Climate Change, 9, 306–312
-  
-   Smith et al. (2021) _Socioeconomic impacts of marine heatwaves: Global issues and opportunities,_ Science 374: 6566
-  
-   Wernberg et al. (2013), _An extreme climatic event alters marine ecosystem structure in a global biodiversity hotspot_. Nature Climate Change 3, pages78–82

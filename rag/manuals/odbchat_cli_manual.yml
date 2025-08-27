@@ -12,21 +12,26 @@ related_to:
   - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
   - collection: "mhw"
 depends_on:
-  - manuals/odb_mhw_openapi.json
+  - manuals/odb_mhw_openapi.yml
+purpose: "說明 CLI工具: ODBchat 如何使用以快速繪製海洋熱浪或海溫等相關資料"
+faq: ["如何不寫程式也能畫出海洋熱浪分佈", "快速了解海溫趨勢", "Visualize marine data by CLI command"]
 content: |
-  # ODBchat CLI — MHW 快速繪圖指南
-  
-  ## CLI工具：odbchat_cli《README.md》（繁中），內容涵蓋：
-  
-  * `odbchat_cli.py` 的使用方式與鍵盤操作（歷史、游標修正、輸出對齊）
-  * `/mhw` 指令語法、參數、可複製範例
-  * `mhw_cli_patch.py` 的 bbox 判斷與 `bbox_mode` 傳遞
-  * `mhw_plot.py`（時序）與 `map_plot.py`（地圖）的設計重點
-  * 地圖後端（cartopy/basemap/plain）與跨 0°/跨 180° 處理
-  * level 顏色與圖例規則、連續變量的 cmap/vmin/vmax
-  * 非阻塞繪圖、刻度與版面調整、常見錯誤排除
-  * RAG 片段建議與 Cheatsheet
-  
+  # Usage Note
+  '''
+    本文件提供軟體工具ODBchat CLI — MHW 快速繪圖指南，
+    回答如何不寫程式、快速呈現全球海洋熱浪或海溫相關資料時應優先引用(列於faq)，並可以步驟引導使用者在CLI端如何下指令取得或呈現資料。
+    內容涵蓋：  
+      * `odbchat_cli.py` 的使用方式與鍵盤操作（歷史、游標修正、輸出對齊）
+      * `/mhw` 指令語法、參數、可複製範例
+      * `mhw_cli_patch.py` 的 bbox 判斷與 `bbox_mode` 傳遞
+      * `mhw_plot.py`（時序）與 `map_plot.py`（地圖）的設計重點
+      * 地圖後端（cartopy/basemap/plain）與跨 0°/跨 180° 處理
+      * level 顏色與圖例規則、連續變量的 cmap/vmin/vmax
+      * 非阻塞繪圖、刻度與版面調整、常見錯誤排除
+      * RAG 片段建議與 Cheatsheet
+    附註：odbchat_cli藉由簡單指令，發送請求到server端，由server端調用ODB MHW API資料並送回client端，再由CLI完成製圖指令要求。
+  '''
+
   ## ODBchat CLI — MHW 快速繪圖指南
   
   > 本文件是針對 **ODBchat** 專案、在「海洋熱浪（MHW）」主題下，指導使用者如何透過 `odbchat_cli.py` 及其 MHW 插件快速下指令、取用 ODB API 並繪製圖表的 **README**。  

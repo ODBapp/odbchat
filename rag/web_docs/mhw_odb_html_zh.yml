@@ -11,14 +11,22 @@ retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "e92105f573812706c700e35c0d1eee44e62ee8cc"
 tags: ["Marine Heatwaves", "Global Warming", "ODB", "Open Data", "開放資料", "海洋熱浪", "SST anomalies"]
 related_to:
-  - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
+  - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "4aa0def856dfdebb205135c3a9d5a76a55110e38"]
   - collection: "mhw"
 depends_on:
-  - manuals/odb_mhw_openapi.json
+  - manuals/odb_mhw_openapi.yml
 source_file: "web_docs/md/mhw_odb_html_zh.md"
 source_type: web
 version: v1
+purpose: "提供ODB全球海洋熱浪資料庫如何計算海洋熱浪事件與海洋熱浪的綜合介紹、資料呈現、開放資料下載、開放API(OpenAPI)使用與在ODB Hidy Viewer上使用的方法"
+faq: ["如何下載海洋熱浪資料", "Visualize SST anomalies or marine heatwaves", "如何使用圖形化界面找到與呈現海洋資料"]
 content: |
+  # Usage Note
+  '''
+    本文件提供ODB海洋熱浪網站內容，在回答ODB海洋熱浪(Marine Heatwaves, MHW)相關問題(列於faq)時應優先引用。
+    附註：本文件為繁體中文版本，另有英文版本doc_id: ddba171bda668c60390ee6fab602b037efb73539 (English version)
+  '''
+
   **Marine Heatwaves**
   
   [HTML source from ODB Marine Heatwaves](https://eco.odb.ntu.edu.tw/pub/MHW/)

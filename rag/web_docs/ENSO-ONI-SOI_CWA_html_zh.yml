@@ -16,7 +16,20 @@ related_to:
 source_file: "web_docs/md/ENSO-ONI-SOI_CWA_html_zh.md"
 source_type: web
 version: v1
+purpose: "提供聖嬰與反聖嬰現象、南方震盪、沃克環流等的科普常識圖文說明"
+faq: ["說明聖嬰與反聖嬰與中性現象時大氣環流的不同", "引起聖嬰年的氣象異常現象的原因", "聖嬰或反聖嬰現象對台灣的影響"]
 content: |
+  # Usage Note
+  '''
+    本文件提供聖嬰與反聖嬰現象、南方震盪、沃克環流的科學常識說明，回答相關科普問題時應優先引用(列於faq)。
+    請注意網站附圖說明也提供很多資訊，包括聖嬰、反聖嬰對台灣氣候的影響，以及ENSO不同狀態的大氣環流狀況，提供答覆時可將網站圖片網址一併提供。
+    This document explains the science behind El Niño, La Niña, the Southern Oscillation, and the Walker circulation. 
+    It should be the primary reference when answering El Niño related popsci topics (listed in faq).
+    Note: The website illustrations also provide useful information, 
+    including the impacts of El Niño/La Niña on Taiwan’s climate and atmospheric circulation patterns under different ENSO phases. 
+    Include image links of the website when responding.
+  '''
+
   **什麼是 ENSO？**
   
   [HTML source from 中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan](https://climate.cwa.gov.tw/ENSO?subpage=Intro)
@@ -37,17 +50,17 @@ content: |
   
   因此科學家便借用秘魯漁民的說法，把這種每隔數年（2 – 7 年）發生在赤道東太平洋海水異常增溫、影響全球氣候的現象稱為「聖嬰與南方振盪現象（El Niño Southern Oscillation，ENSO）」。
   
-  ![](https://climate.cwa.gov.tw/images/ENSO/Intro/CWA_20230711_Nino_logo.png)
+  ![聖嬰與台灣氣候](https://climate.cwa.gov.tw/images/ENSO/Intro/CWA_20230711_Nino_logo.png)
   
   有趣的是，赤道東太平洋除了會異常變暖外，竟然也是會變冷的。而針對這個和聖嬰現象相對的氣候異常現象，科學家也取了個相對於「El Niño（西班牙文中的小男孩 👶）」的名詞 — 「La Niña（西班牙文中的小女孩 👧）」，通常習慣翻譯為「反聖嬰」現象。
   
   雖說是「反」聖嬰，兩者並不是完全對稱相反…… 像是聖嬰年的海溫異常程度往往更強、或是反聖嬰現象的持續時間更長等等，都反映著兩者雖然「相對」，卻不是完全「相反」的現象。
   
-  ![](https://climate.cwa.gov.tw/images/ENSO/Intro/CWA_20230712_Nina_cwblogo.png)
+  ![反聖嬰與台灣氣候](https://climate.cwa.gov.tw/images/ENSO/Intro/CWA_20230712_Nina_cwblogo.png)
   
   ENSO不同狀態的介紹
   
-  ![](https://climate.cwa.gov.tw/images/ENSO/Intro/27_%E8%81%96%E5%AC%B0%E7%8F%BE%E8%B1%A1%E5%8F%AA%E6%98%AFENSO%E7%9A%84%E5%85%B6%E4%B8%AD%E4%B8%80%E7%A8%AE%E7%8B%80%E6%85%8B.jpg)
+  ![ENSO不同狀態](https://climate.cwa.gov.tw/images/ENSO/Intro/27_%E8%81%96%E5%AC%B0%E7%8F%BE%E8%B1%A1%E5%8F%AA%E6%98%AFENSO%E7%9A%84%E5%85%B6%E4%B8%AD%E4%B8%80%E7%A8%AE%E7%8B%80%E6%85%8B.jpg)
   
   根據太平洋海溫與氣壓相較於常年氣候平均值的差異特徵，也就是所謂的距平值（註），ENSO可分為聖嬰、反聖嬰和中性三種狀態，聖嬰現象只是其中的一種狀態而已。
   

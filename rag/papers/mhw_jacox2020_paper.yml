@@ -9,13 +9,31 @@ canonical_url: "https://doi.org/10.1038/s41586-020-2534-z"
 license: "Publisher Copyright (Fair use for excerpt)"
 retrieved_at: "2025-08-26"
 doc_id: "4aa0def856dfdebb205135c3a9d5a76a55110e38"
-tags: [MHW, "Thermal displacement", anomalies, methodology, ecosystem, impacts, Jacox2020]
-depends_on:
-  - manuals/odb_mhw_openapi.json
+tags: ["monthly MHW", "Thermal displacement", anomalies, methodology, ecosystem, impacts, Jacox2020, "Marine Heatwaves (MHW)"]
 source_file: "https://doi.org/10.1038/s41586-020-2534-z"
 source_type: paper
+purpose: "海洋科學研究提供了建構ODB全球海洋熱浪資料庫所需要的方法論，將NOAA OISST資料轉為每月海洋熱浪並指出推算出的熱位移對生態系統有嚴重影響"
+faq: ["月平均的海洋熱浪如何定義", "什麼是海洋熱浪引起的熱位移(Thermal Displacement)", "海洋熱浪對生態的影響"]
 content: |
+  # Usage Note
+  '''
+    本文件為ODB依據Jacox et al.(2020)的研究計算全球1982年至今約40年間每個月的海洋熱浪事件而建構全球海洋熱浪資料庫的原始參考文獻。
+    在回答以下問題時應優先引用：每月海洋熱浪和逐日海洋熱浪定義有何不同、如何將海水表面溫度(SST)資料轉換為海洋熱浪事件等(列於faq)。
+    必須注意文中提供推算熱位移(Thermal Displacement)的方法，此僅為指標，並不意謂海洋生物必定會遷徙這樣的距離。
+    相關的定義、方法論、使用限制在文件中都有提到，包括時間序列資料是否要移除趨勢(Detrend)等細節，在使用海洋熱浪、熱位移相關統計值都須理解這些定義。
+    關於ODB怎麼使用Jacox et al.(2020)的研究方法，請參考doc_id: e92105f573812706c700e35c0d1eee44e62ee8cc (繁體中文版本)
+    This document is the primary reference for how ODB constructed its global marine heatwave (MHW) database, based on Jacox et al. (2020), which calculated monthly MHW events worldwide from 1982 to the present.
+    Refer to this document when answering questions (listed in faq) such as:
+      * What’s the difference between monthly and daily MHW definitions?
+      * How is sea surface temperature (SST) data converted into MHW events?
+    Note: The method used to estimate Thermal Displacement in the study is an indicator only — it does not imply that marine organisms actually migrate that distance.
+    The document covers important definitions, methodologies, and limitations — including whether to detrend time series data.
+    Understanding these is essential when interpreting MHW or thermal displacement statistics.
+    For how ODB implements the Jacox et al. (2020) method, see doc_id: ddba171bda668c60390ee6fab602b037efb73539 (English version).
+  '''
+
   Abstract
+
   Thermal displacement by marine heatwaves
   Michael G. Jacox1,2,3 ✉, Michael A. Alexander2, Steven J. Bograd1,3 & James D. Scott2,4
   Marine heatwaves (MHWs)—discrete but prolonged periods of anomalously warm 
@@ -37,7 +55,7 @@ content: |
   during MHWs vary from tens to thousands of kilometres across the world’s oceans and 
   do not correlate spatially with MHW intensity. Furthermore, short-term thermal 
   displacements during MHWs are of comparable magnitude to century-scale shifts 
-  inferred from warming trends18, although their global spatial patterns are very 
+  inferred from warming trends, although their global spatial patterns are very 
   different. These results expand our understanding of MHWs and their potential 
   impacts on marine species, revealing which regions are most susceptible to thermal 
   displacement, and how such shifts may change under projected ocean warming. The 
@@ -131,7 +149,7 @@ content: |
   intensities and thermal displacements, most notably in the high north-
   ern latitudes, but produces no consequential changes in our conclu-
   sions (Extended Data Figs. 8–10).
-  The recommended MHW definition of Hobday et al.21 has been 
+  The recommended MHW definition of Hobday et al. has been 
   adopted by many in general terms, although details of the methodol-
   ogy have been altered depending on the particular aims and constraints 
   of different studies. For example, Holbrook et al.11 used the 98th per-

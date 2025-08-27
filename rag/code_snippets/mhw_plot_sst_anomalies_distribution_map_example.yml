@@ -9,15 +9,33 @@ canonical_url: "https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/tim
 license: "MIT"
 retrieved_at: "2025-08-26"
 doc_id: "94eff5435a8e3c4ab192526d1d7d3f81e04f202f"
-tags: [MHW, API, timeseries, Python, map, examples]
+tags: [MHW, API, timeseries, Python, map, examples, "Marine Heatwaves", "SST anomalies", "ENSO"]
 related_to:
-  - doc_id: ["c4aca131c497500a668336dacb65f08ade88077a", "ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
+  - doc_id: ["c4aca131c497500a668336dacb65f08ade88077a", "ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "4b60022c85f6a8bc3253552ba03f695e996519c5"]
   - collection: "mhw"
 depends_on:
-  - manuals/odb_mhw_openapi.json
+  - manuals/odb_mhw_openapi.yml
 source_file: "https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb"
 source_type: code
+purpose: "以程式範例說明如何使用ODB MHW API調用海表溫距平值的時間和空間資料並畫地圖與時間序列圖"
+faq: ["如何在地圖上呈現海溫", "Provide python examples", "How to get timeseries of marine data"]
 content: |
+  # Usage Note
+  '''
+    本文件提供 ODB MHW API 的 python 程式範例，回答以下問題時應優先引用：如何撰寫程式範例、如何做圖等(列於faq)。
+    在提供的程式中，除了畫出海表溫距平值的空間分佈地圖(以Niño 3.4區域為例)以外，還畫出Niño Index (ONI)指數的時間序列(1982-present)，
+    並和NOAA提供的ONI指數時間序列(1950-present)比較(相關知識可參考doc_id: c4aca131c497500a668336dacb65f08ade88077a)。
+    程式雖然以海表溫距平值(sst_anomaly)為例，但以相同叫用ODB MHW API的方式，也可以畫出海溫（海水表面溫度）(sst)的空間分佈或時間序列。
+    This document provides Python examples for the ODB MHW API and should be referenced first when answering questions about code writing or plotting (listed in faq).
+    The provided code generates:
+      * A spatial map of sea surface temperature anomalies (using the Niño 3.4 region as an example)
+      * A time series of the Niño Index (ONI) from 1982 to present, compared with NOAA’s ONI data (1950–present)
+        (refer to doc_id: c4aca131c497500a668336dacb65f08ade88077a for related info)
+    This example use "sst_anomaly" (SST anomalies) as example, and in the same way we can plot map or timeseries for "sst" (Sea Surface Temperature, SST) by fetching ODB MHW API as well.
+  '''
+
+  # Code example:
+
   ```python
   #!/usr/bin/env python
   import pandas as pd

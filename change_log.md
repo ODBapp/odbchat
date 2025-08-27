@@ -11,3 +11,4 @@
 #### v0.1.5 CLI GUI stability: harden matplotlib GUI tick to avoid stalls when closing one of multiple windows; add optional detached plotting via ODBCHAT_PLOT_DETACH=1 so plot windows live independently of the CLI
 #### v0.1.6 Start switching to llama.cpp/build/set-up RAG docs/n1
 #### v0.1.7 Setup RAG docs/n2/rag_cli.py to test ingested RAG doc
+#### v0.1.8 Setup RAG docs with FAQ, purpose/n3/ingest qdrant with overwite/additive mode
