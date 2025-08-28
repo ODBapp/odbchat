@@ -12,3 +12,5 @@
 #### v0.1.6 Start switching to llama.cpp/build/set-up RAG docs/n1
 #### v0.1.7 Setup RAG docs/n2/rag_cli.py to test ingested RAG doc
 #### v0.1.8 Setup RAG docs with FAQ, purpose/n3/ingest qdrant with overwite/additive mode
+#### v0.1.9 New Ingestion so that it can handle multiple YAML with OAS/and rag_cli.py can find OAS parameters/n4
+

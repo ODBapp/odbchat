@@ -48,8 +48,7 @@ content: |
     Overall, the ODB MHW API is practically useful for analyzing SST anomalies, marine heatwave distributions, and long-term trends.
   '''
 
-  # Code example:
-
+  # Code block
   ```python
   #!/usr/bin/env python
   import requests

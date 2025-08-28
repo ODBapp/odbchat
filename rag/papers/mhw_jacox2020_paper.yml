@@ -9,11 +9,11 @@ canonical_url: "https://doi.org/10.1038/s41586-020-2534-z"
 license: "Publisher Copyright (Fair use for excerpt)"
 retrieved_at: "2025-08-26"
 doc_id: "4aa0def856dfdebb205135c3a9d5a76a55110e38"
-tags: ["monthly MHW", "Thermal displacement", anomalies, methodology, ecosystem, impacts, Jacox2020, "Marine Heatwaves (MHW)"]
+tags: ["monthly MHW", "Thermal displacement", anomalies, methodology, ecosystem, impacts, Jacox2020, "Marine Heatwaves (MHW)", "海洋熱浪", "海洋生態系統"]
 source_file: "https://doi.org/10.1038/s41586-020-2534-z"
 source_type: paper
 purpose: "海洋科學研究提供了建構ODB全球海洋熱浪資料庫所需要的方法論，將NOAA OISST資料轉為每月海洋熱浪並指出推算出的熱位移對生態系統有嚴重影響"
-faq: ["月平均的海洋熱浪如何定義", "什麼是海洋熱浪引起的熱位移(Thermal Displacement)", "海洋熱浪對生態的影響"]
+faq: ["月平均的海洋熱浪如何定義", "什麼是海洋熱浪引起的熱位移(Thermal Displacement)", "海洋熱浪對海洋生態的影響"]
 content: |
   # Usage Note
   '''

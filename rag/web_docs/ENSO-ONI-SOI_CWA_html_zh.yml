@@ -9,7 +9,7 @@ canonical_url: "https://climate.cwa.gov.tw/ENSO?subpage=Intro"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "c5edba53a128c7540e3d50c139d83d86b8a34087"
-tags: [ENSO, "Southern Oscillation", "El Niño", "La Niña", "Oceanic Niño Index", "SST anomalies", "沃克環流", "Walker circulation", "聖嬰現象", "反聖嬰", "南方振盪", basics]
+tags: ["ENSO basics", "Southern Oscillation", "El Niño", "La Niña", "沃克環流", "Walker circulation", "聖嬰現象", "反聖嬰", "南方振盪"]
 related_to:
   - doc_id: [04d301444644a23399d005a116fe564d2c6ce0dd"]
   - collection: "mhw"
@@ -21,7 +21,7 @@ faq: ["說明聖嬰與反聖嬰與中性現象時大氣環流的不同", "引起
 content: |
   # Usage Note
   '''
-    本文件提供聖嬰與反聖嬰現象、南方震盪、沃克環流的科學常識說明，回答相關科普問題時應優先引用(列於faq)。
+    本文件提供聖嬰與反聖嬰現象(ENSO)、南方震盪、沃克環流的科學常識說明，回答ENSO相關科普問題時應優先引用(列於faq)。
     請注意網站附圖說明也提供很多資訊，包括聖嬰、反聖嬰對台灣氣候的影響，以及ENSO不同狀態的大氣環流狀況，提供答覆時可將網站圖片網址一併提供。
     This document explains the science behind El Niño, La Niña, the Southern Oscillation, and the Walker circulation. 
     It should be the primary reference when answering El Niño related popsci topics (listed in faq).

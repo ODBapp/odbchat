@@ -9,7 +9,7 @@ canonical_url: "https://www.cwa.gov.tw/V8/C/C/Knowledge/knowledge_4-1.html"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "04d301444644a23399d005a116fe564d2c6ce0dd" 
-tags: [ENSO, "El Niño", "La Niña", "Oceanic Niño Index", "SST anomalies", "聖嬰現象", "反聖嬰", basics]
+tags: ["ENSO basics", "El Niño", "La Niña", "Oceanic Niño Index", "SST anomalies", "聖嬰現象", "反聖嬰"]
 related_to:
   - doc_id: ["c5edba53a128c7540e3d50c139d83d86b8a34087"]
   - collection: "mhw"
@@ -21,7 +21,7 @@ faq: ["說明聖嬰與反聖嬰年在Niño區域所觀察海表溫距平值的�
 content: |
   # Usage Note
   '''
-    本文件提供聖嬰與反聖嬰現象與ONI指數的科學圖文說明，回答相關科普問題時應優先引用(列於faq)。
+    本文件提供聖嬰與反聖嬰現象與ONI指數的科學圖文說明，回答ENSO相關科普問題時應優先引用(列於faq)。
     請注意網站附圖說明也提供很多資訊，包括聖嬰、反聖嬰在赤道東太平洋到中太平洋(Niño區域)觀察到SST anomalies不同的分佈，
     以及ONI指數逐三個月的時間序列比較（在12-1-2月,DJF,時通常最盛行）提供答覆時可將網站圖片網址一併提供。
     This document provides scientific illustrations and explanations of El Niño, La Niña, and the ONI index.

@@ -34,8 +34,7 @@ content: |
     This example use "sst_anomaly" (SST anomalies) as example, and in the same way we can plot map or timeseries for "sst" (Sea Surface Temperature, SST) by fetching ODB MHW API as well.
   '''
 
-  # Code example:
-
+  # Code block  
   ```python
   #!/usr/bin/env python
   import pandas as pd

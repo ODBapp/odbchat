@@ -13,8 +13,8 @@ timescale: monthly
 related_to:
   - doc_id: ["b7cea35aac3358af2e52d9f9079779bfdda0fee7"]
   - collection: "mhw"
-purpose: "說明 ODB MHW API 如何使用"
-faq: ["如何使用 ODB MHW API?", "如何取得全球海洋熱浪資料?", "How to call ODB MHW API endpoint to get timeseries data"]
+purpose: "提供ODB MHW API OpenAPI specification (OAS)以規格說明 ODB MHW API 如何使用"
+faq: ["如何使用 ODB MHW API?", "如何取得全球海洋熱浪資料?", "Call ODB MHW API endpoint to get timeseries data"]
 content: |
   # Usage Note
   '''
@@ -25,6 +25,43 @@ content: |
     serving as the primary reference for programmatic or browser-based access to global MHW data (listed in faq).
     The API specification follows the OpenAPI 3.1 standard (https://swagger.io/specification/), in YAML format, 
     with detailed descriptions of endpoints, parameters, specifications, and responses.
+    舉例說明參數`append`意義，在下方規格書中列舉：
+      name: append
+      description:
+        Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'
+    說明了append這個參數，可以附加想要的資料變數(data fields)進去，而允許(allowed)的data fields則包括了
+    'sst', 'sst_anomaly', 'level', 'td'
+    這些資料變數儲存在 Zarr 資料集，而ODB MHW API去調用這個資料集，請參考doc_id: b7cea35aac3358af2e52d9f9079779bfdda0fee7
+    這4個資料變數分別對應 
+      * sst: 海水表面溫度 (SST) 
+      * sst_anomaly: 海表溫距平值(異常值; SST anomalies)
+      * level: 海洋熱浪等級
+      * td: 海洋熱浪引起的熱位移(Thermal Displacement)
+    append 賦值的方式是用逗號(comma)分隔，比如'sst,sst_anomaly'，即是要求API要調用2個資料變數 sst 與 sst_anomaly，
+    如果只想調用海洋熱浪等級，便使用 append: 'level' (或在HTTP GET方法中query parameter加入 `&append=level`)，也因此，
+    append 給值的不同，會改變API調用哪些資料變數，因而也影響輸出的JSON欄位，比如
+    append: 'sst' 得到的JSON response裡面的 陣列元素(element)為
+    {
+      "lon": 135.125,
+      "lat": 15.125,
+      "date": "2024-12-01",
+      "sst": 29.0103206634522
+    },
+    但 append: 'sst,level' (額外調用了 SST 與海洋熱浪等級)，輸出的JSON response裡的陣列元素為
+    {
+      "lon": 135.125,
+      "lat": 15.125,
+      "date": "2024-12-01",
+      "level": 1,
+      "sst": 29.0103206634522
+    }
+    可以看到輸出多了"level": 1 這組key-value
+    補註：
+      * append 參數default值為'level'. 如果你在程式或瀏覽器不指定append參數，ODB MHW API會預設回傳海洋熱浪等級。
+      * 由於ODB MHW API使用HTTP GET method，因此很方便直接在瀏覽器中輸入server URL加上query parameters即可調用資料，
+        比如以剛才輸出 SST 與海洋熱浪等級為例，瀏覽器中輸入
+        https://eco.odb.ntu.edu.tw/api/mhw?lon0=135&lon1=150&lat0=15&lat1=30&start=2024-12-01&end=2025-06-01&append=sst,level
+        即可得到所需資料，非常方便。           
   '''
 
 ---
