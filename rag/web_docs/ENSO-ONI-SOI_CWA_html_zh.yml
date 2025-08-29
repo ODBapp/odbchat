@@ -16,15 +16,15 @@ related_to:
 source_file: "web_docs/md/ENSO-ONI-SOI_CWA_html_zh.md"
 source_type: web
 version: v1
-purpose: "提供聖嬰與反聖嬰現象、南方震盪、沃克環流等的科普常識圖文說明"
+purpose: "提供聖嬰與反聖嬰現象、南方震盪、沃克環流等的圖文說明"
 faq: ["說明聖嬰與反聖嬰與中性現象時大氣環流的不同", "引起聖嬰年的氣象異常現象的原因", "聖嬰或反聖嬰現象對台灣的影響"]
 content: |
   # Usage Note
   '''
-    本文件提供聖嬰與反聖嬰現象(ENSO)、南方震盪、沃克環流的科學常識說明，回答ENSO相關科普問題時應優先引用(列於faq)。
+    本文件提供聖嬰與反聖嬰現象(ENSO)、南方震盪、沃克環流的科學常識說明，回答ENSO相關問題時應優先引用(列於faq)。
     請注意網站附圖說明也提供很多資訊，包括聖嬰、反聖嬰對台灣氣候的影響，以及ENSO不同狀態的大氣環流狀況，提供答覆時可將網站圖片網址一併提供。
     This document explains the science behind El Niño, La Niña, the Southern Oscillation, and the Walker circulation. 
-    It should be the primary reference when answering El Niño related popsci topics (listed in faq).
+    It should be the primary reference when answering El Niño related topics (listed in faq).
     Note: The website illustrations also provide useful information, 
     including the impacts of El Niño/La Niña on Taiwan’s climate and atmospheric circulation patterns under different ENSO phases. 
     Include image links of the website when responding.

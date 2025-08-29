@@ -7,7 +7,7 @@ title: ODBchat CLI — MHW 快速繪圖指南
 lang: zh_TW
 issuer: "ODB Project (internal)"
 description: "本文件是針對 ODBchat 專案、在「海洋熱浪（MHW）」主題下，指導使用者如何透過 odbchat_cli.py 及其 MHW 插件快速下指令、取用 ODB API 並繪製圖表的 README"
-tags: [MHW, "Marine Heatwaves", CLI, ODB, Tool, 海洋熱浪]
+tags: ["Plot MHW", "Marine Heatwaves Tool", CLI, ODB, 海洋資料繪圖]
 related_to:
   - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
   - collection: "mhw"

@@ -8,9 +8,9 @@ canonical_url: "https://origin.cpc.ncep.noaa.gov/products/analysis_monitoring/en
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "c4aca131c497500a668336dacb65f08ade88077a"
-tags: ["ENSO", "El Niño", "Oceanic Niño Index", "SST anomalies", data, basics, 聖嬰現象指數]
+tags: ["ENSO basics", "El Niño", "Oceanic Niño Index", 聖嬰現象指數]
 related_to:
-  - doc_id: ["4b60022c85f6a8bc3253552ba03f695e996519c5", "94eff5435a8e3c4ab192526d1d7d3f81e04f202f"]
+  - doc_id: ["94eff5435a8e3c4ab192526d1d7d3f81e04f202f"]
   - collection: "mhw"
 source_file: "web_docs/md/oni_NOAA_html_en.md"
 source_type: web
