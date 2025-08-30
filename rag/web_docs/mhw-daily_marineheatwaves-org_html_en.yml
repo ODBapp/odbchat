@@ -16,12 +16,12 @@ related_to:
 source_file: "web_docs/md/mhw-daily_marineheatwaves-org_html_en.md"
 source_type: web
 version: v1
-purpose: "利用逐日海洋熱浪(daily MHWs)計算每年海洋熱浪天數的時間序列，提供海洋熱浪在全球發生現況與影響等相關科普知識"
+purpose: "利用逐日海洋熱浪(daily MHWs)計算每年海洋熱浪天數的時間序列，提供海洋熱浪在全球發生現況與影響"
 faq: ["如何定義逐日海洋熱浪(daily MHW)", "How to measure annual MHW days", "What about the future under such warming scenario"]
 content: |
   # Usage Note
   '''
-    本文件提供較常見的每日(daily)海洋熱浪(MHW)定義、計算方法、統計值與現況等綜合介紹，在回答海洋熱浪相關科普問題可優先引用(列於faq)。
+    本文件提供較常見的每日(daily)海洋熱浪(MHW)定義、計算方法、統計值與現況等綜合介紹，在回答海洋熱浪描述性問題可優先引用(列於faq)。
     注意：本文的海洋熱浪定義，與ODB依據Jacox et al.(2020)的研究所使用的每月(monthly)海洋熱浪定義不同，請參考doc_id: 4aa0def856dfdebb205135c3a9d5a76a55110e38
     This document provides a general introduction to the commonly used definition of daily marine heatwaves (MHW), including calculation methods, statistics, and current status. 
     It should be the primary reference for answering MHW-related popsci topics (listed in faq).

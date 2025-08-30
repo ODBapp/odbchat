@@ -9,7 +9,7 @@ canonical_url: "https://eco.odb.ntu.edu.tw/pub/MHW/?lang=en"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "ddba171bda668c60390ee6fab602b037efb73539"
-tags: ["Marine Heatwaves", "Global Warming", "ODB", "Open Data", "SST anomalies"]
+tags: ["Marine Heatwaves", "MHW database", ODB, "Open Data", "SST anomalies", method, overview]
 related_to:
   - doc_id: ["e92105f573812706c700e35c0d1eee44e62ee8cc", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "4aa0def856dfdebb205135c3a9d5a76a55110e38"]
   - collection: "mhw"

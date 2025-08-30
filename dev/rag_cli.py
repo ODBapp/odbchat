@@ -10,9 +10,8 @@ import argparse
 import asyncio
 import warnings
 from typing import Any, Dict, List, Tuple, Optional, Iterable
-from collections import Counter
+from collections import Counter, defaultdict
 
-# 避免舊驅動 CUDA 噴警告干擾
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.cuda")
 
 import httpx
@@ -20,35 +19,36 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from sentence_transformers import SentenceTransformer
 
-# ----------------------
+# =========================
 # Config (env)
-# ----------------------
-QDRANT_HOST   = os.environ.get("QDRANT_HOST", "localhost")
-QDRANT_PORT   = int(os.environ.get("QDRANT_PORT", "6333"))
-COLLECTION    = os.environ.get("QDRANT_COL", "odb_mhw_knowledge_v1")
+# =========================
+QDRANT_HOST    = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT    = int(os.environ.get("QDRANT_PORT", "6333"))
+COLLECTION     = os.environ.get("QDRANT_COL", "odb_mhw_knowledge_v1")
 
-EMBED_MODEL   = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
-EMBED_DIM     = 384
+EMBED_MODEL    = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
+EMBED_DIM      = 384
 
-OLLAMA_URL    = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL  = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
-OLLAMA_TIMEOUT= float(os.environ.get("OLLAMA_TIMEOUT", "120"))
+# 兩種 LLM 後端：ollama / llama.cpp server
+OLLAMA_URL     = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "300"))   # 放寬
 
-LLAMA_URL     = os.environ.get("LLAMA_URL", "http://localhost:8001/completion")
+LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8001/completion")
 
-# ----------------------
+# =========================
 # Init
-# ----------------------
+# =========================
 qdrant   = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
 
-# ----------------------
-# Heuristics (minimal rules; focus on retrieval quality)
-# ----------------------
-API_KEYWORDS   = ["api", "openapi", "oas", "endpoint", "/api/", "參數", "規格", "swagger", "parameters", "應用程式介面"]
-CODE_KEYWORDS  = ["code", "程式", "python", "範例", "example", "下載", "csv", "plot", "畫圖", "抓資料", "implement", "實做"]
-ECOSYS_KEYS    = ["ecosystem", "生態", "生態系", "生態系統"]
-ENSO_TOKENS    = ["enso", "聖嬰", "反聖嬰", "el niño", "la niña", "enso basics"]
+# =========================
+# Lightweight heuristics
+# =========================
+API_KEYWORDS   = ["api","openapi","oas","endpoint","/api/","參數","規格","swagger","parameters","應用程式介面"]
+CODE_KEYWORDS  = ["code","程式","python","範例","example","下載","csv","plot","畫圖","抓資料","implement","實做","方法","時序圖","時間序列","地圖","繪圖","資料","分析","趨勢"]
+ECOSYS_KEYS    = ["ecosystem","生態","生態系","生態系統"]
+ENSO_TOKENS    = ["enso","聖嬰","反聖嬰","el niño","la niña","enso basics"]
 
 def _lower(s: Optional[str]) -> str:
     return (s or "").lower()
@@ -56,13 +56,17 @@ def _lower(s: Optional[str]) -> str:
 def detect_api_intent(q: str) -> bool:
     ql = q.lower()
     if any(k in ql for k in API_KEYWORDS): return True
-    if any(k in ql for k in CODE_KEYWORDS): return True
-    if "python" in ql or "給 python" in ql: return True
+    if "python" in ql: return True
     return False
 
 def detect_code_intent(q: str) -> bool:
     ql = q.lower()
-    return any(k in ql for k in CODE_KEYWORDS) or "python" in ql
+    if any(k in ql for k in CODE_KEYWORDS): return True
+    # 合併中文字中間空白：避免「畫 時序圖」、「畫 地圖」抓不到
+    nospace = ql.replace(" ", "")
+    for kw in ["畫圖","畫地圖","時序圖","時間序列","繪圖"]:
+        if kw in nospace: return True
+    return False
 
 def detect_ecosys(q: str) -> bool:
     ql = q.lower()
@@ -72,6 +76,37 @@ def detect_enso(q: str) -> bool:
     ql = q.lower()
     return any(k in ql for k in ENSO_TOKENS)
 
+# -------- follow-up --------
+FOLLOWUP_TOKENS = [
+    "再做一次","改成","改為","只要json","只要 json","換成","接續","繼續","延續",
+    "上一題","上述","剛剛","同樣","同上","follow-up","不要 csv","改用 json"
+]
+
+def detect_followup(question: str, history: Optional[List[Tuple[str,str]]]) -> Optional[Dict[str,str]]:
+    if not history:
+        return None
+    ql = question.lower()
+    if not any(tok in ql for tok in [t.lower() for t in FOLLOWUP_TOKENS]):
+        # 即使沒有明顯關鍵詞，只要問題很短且含「json/再次/改/只要」也可能是追問
+        if len(question) > 32:
+            return None
+    # 取上一輪
+    prev_q, prev_a = history[-1]
+    # 嘗試抓出上一輪是否使用了 API endpoint
+    ep = None
+    m = re.search(r'https?://[^\s"\'<>]+/api/[^\s"\'<>]+', prev_a)
+    if m:
+        ep = m.group(0)
+    # 壓縮上一輪答案避免過長
+    prev_a_compact = re.sub(r"```[\s\S]*?```", "[code omitted]", prev_a)
+    prev_a_compact = re.sub(r"\s+", " ", prev_a_compact).strip()
+    if len(prev_a_compact) > 600:
+        prev_a_compact = prev_a_compact[:600] + "…"
+    return {"prev_q": prev_q, "prev_a": prev_a_compact, "prev_ep": ep or ""}
+
+# =========================
+# Helpers
+# =========================
 def get_payload_text(payload: Dict[str, Any]) -> str:
     return payload.get("text") or payload.get("content") or ""
 
@@ -108,64 +143,137 @@ def _title_tags_content(payload: Dict[str, Any]) -> Tuple[str, List[str], str]:
     return title, tags, content
 
 def keyword_boost(q: str, payload: Dict[str, Any], debug: bool=False) -> float:
-    """小加分/扣分，避免『工人智慧』式 if-else；只調檢索排序，不影響 LLM 成文。"""
     score = 0.0
     title, tags, content = _title_tags_content(payload)
     ql = q.lower()
 
-    # 主題命中（MHW）
-    for kw in ["marine heatwaves", "mhw", "海洋熱浪", "marine heatwaves (mhw)"]:
+    # 主題（MHW）
+    for kw in ["marine heatwaves","mhw","海洋熱浪","marine heatwaves (mhw)"]:
         if (kw in (title or "")) or any(kw in t for t in tags) or (kw in content):
             score += 0.6; break
 
-    # 生態系問題 → 偏好含生態關鍵詞的文
+    # 生態系問題 → 偏好含生態關鍵詞
     if detect_ecosys(q):
         for kw in ECOSYS_KEYS:
             if (kw in (title or "")) or any(kw in t for t in tags) or (kw in content):
                 score += 0.6; break
 
-    # API / 程式問題 → 偏好 api_spec / code_snippet
-    if detect_api_intent(q):
-        if (payload.get("doc_type") in ("api_spec", "code_snippet")):
+    # API / 程式 / 方法 / 繪圖
+    if detect_api_intent(q) or detect_code_intent(q):
+        #if debug: print(f"[DEBUG] hits for detecting code needed in question")
+        if (payload.get("doc_type") in ("api_spec","code_snippet","code_example","cli_tool_guide")):
             score += 1.2
 
-    # 偏好「分級」內涵（僅當問題提到）
-    if any(kw in ql for kw in ["level", "分級", "category", "categorize", "等級"]):
-        if any(k in content for k in ["hobday", "海洋熱浪分級標準", "categories of severity", "90th percentile",
-                                      "extreme", "severe", "moderate", "strong", "極端", "嚴重", "中等", "強烈"]):
+    # 分級
+    if any(kw in ql for kw in ["level","分級","category","categorize","等級"]):
+        if any(k in content for k in ["hobday","海洋熱浪分級標準","categories of severity","90th percentile",
+                                      "extreme","severe","moderate","strong","極端","嚴重","中等","強烈"]):
             score += 0.8
 
-    # 若問題與 ENSO 無關，減少 ENSO 文件權重（避免常錯配）
+    # 問題不含 ENSO → 強降權 ENSO 文件
     if not detect_enso(q):
-        if any(t in ["enso", "el niño", "la niña", "enso basics"] for t in tags):
-            score -= 1.0
+        if any(t in ["enso","el niño","la niñas","la niña","enso basics"] for t in tags) or ("enso" in (title or "")):
+            score -= 2.0
 
-    # 對 CLI 工具說明，只有問題真的提 CLI/指令時才升權重
+    # CLI 工具文件：只有問題真的提 CLI/指令才加分，否則降權
     if payload.get("doc_type") == "cli_tool_guide":
-        if any(k in ql for k in ["cli", "指令", "mhw_plot", "odbchat"]):
+        if any(k in ql for k in ["cli","指令","命令","mhw_plot","odbchat","工具","不用寫程式","no code"]):
             score += 0.5
         else:
             score -= 1.0
+            
+    if debug: print(f"[DEBUG] hits in rerank: {payload.get('title')} with score: {score}")         
     return score
 
 def rerank_with_boost(q: str, hits: List[Dict[str, Any]], debug: bool=False) -> List[Dict[str, Any]]:
-    """保留向量檢索的原順序，再加上 keyword_boost 作輕量重排，避免只打開 if-else。"""
-    alpha = 10.0  # boost 權重（原順序為 base）
+    alpha = 10.0
     scored = []
     n = len(hits)
     for i, h in enumerate(hits):
-        base = (n - i)     # 原順序（越前越大）
+        base = (n - i)
         b = keyword_boost(q, h.get("payload", {}) or {}, debug=debug)
-        scored.append((base + alpha * b, i, h))
+        scored.append((base + alpha*b, i, h))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [x[2] for x in scored]
+    out = [x[2] for x in scored]
+    return out
 
+def source_category(p: Dict[str, Any]) -> str:
+    dt = (p.get("doc_type") or "").lower()
+    st = (p.get("source_type") or "").lower()
+    if dt == "api_spec": return "api"
+    if dt in ("code_snippet","code_example") or "code" in st: return "code"
+    if dt in ("paper_note","paper"): return "paper"
+    if dt in ("manual","manuals","api_guide","api_spec_guide","tutorial","cli_tool_guide"): return "guide"
+    if dt in ("web_article","web"): return "web"
+    return "other"
+
+def diversify_sources(question: str, hits: List[Dict[str, Any]], topk: int, debug: bool=False) -> List[Dict[str, Any]]:
+    """限制某些類別的過度壟斷（避免永遠是 web_docs 那幾篇）"""
+    need_api  = detect_api_intent(question)
+    need_code = detect_code_intent(question)
+    no_enso   = not detect_enso(question)
+
+    # 類別上限（適度保守）
+    caps = {"web": 2, "guide": 1}
+    # 若是 API/程式意圖，至少保證 api/code 能進來（如果命中有）
+    min_need = []
+    if need_api:  min_need.append("api")
+    if need_code: min_need.append("code")
+
+    buckets = defaultdict(list)
+    for h in hits:
+        cat = source_category(h.get("payload", {}) or {})
+        buckets[cat].append(h)
+
+    # 先放必要類別
+    out = []
+    used = set()
+    for mcat in min_need:
+        if buckets[mcat]:
+            out.append(buckets[mcat].pop(0))
+            used.add(id(out[-1]))
+
+    # 再輪流放其他類別，遵守 caps
+    counts = Counter()
+    for h in hits:
+        if id(h) in used:
+            continue
+        p = h.get("payload", {}) or {}
+        cat = source_category(p)
+        # 問題不含 enso → 首輪跳過 enso 標籤（後面若不足再補）
+        tags = [ (t or "").lower() for t in (p.get("tags") or []) ]
+        if no_enso and any(t in ["enso","el niño","la niña","enso basics"] for t in tags):
+            continue
+        if counts[cat] >= caps.get(cat, 10):  # 類別達上限
+            continue
+        out.append(h)
+        counts[cat] += 1
+        if len(out) >= topk:
+            break
+
+    # 如果因為排除 ENSO 或 caps 導致不足，補齊
+    # if debug: print(f"[DEBUG] hits in diversify: {counts} with no_enso: {no_enso} and result: {out}")
+    topm = topk-2
+    if len(out) >= topk:
+        return out[:topk]
+    elif len(out) < topm:
+        for h in hits:
+            if id(h) in used or h in out:
+                continue
+            out.append(h)
+            if len(out) >= topm:
+                break
+    return out
+
+# =========================
+# Qdrant query
+# =========================
 def query_qdrant(question: str, topk: int=5, debug: bool=False) -> List[Dict[str, Any]]:
     vec = encode_query(question)
     resp = qdrant.query_points(
         collection_name=COLLECTION,
         query=vec,
-        limit=topk*2,            # 先抓寬一點，給 booster 重排空間
+        limit=max(20, topk*3),           # 放寬：提升候選多樣性
         with_payload=True,
         with_vectors=False,
         query_filter=None,
@@ -174,37 +282,37 @@ def query_qdrant(question: str, topk: int=5, debug: bool=False) -> List[Dict[str
     hits = [{"text": get_payload_text(getattr(p, "payload", {}) or {}),
              "payload": getattr(p, "payload", {}) or {}} for p in points]
     hits = dedupe_hits(hits)
-    hits = rerank_with_boost(question, hits, debug=debug)[:topk]
+
+    # 重排 + 多樣化（含你要的 debug）
+    reranked = rerank_with_boost(question, hits, debug=debug)
+    if debug:  print(f"[DEBUG] hits after rerank: {[h['payload'].get('title') for h in reranked]}")
+    diversified = diversify_sources(question, reranked, topk, debug=debug)
+    if debug:  print(f"[DEBUG] hits after diversify: {[h['payload'].get('title') for h in diversified]}")
 
     if debug:
-        dist = Counter([(h["payload"].get("title") or h["payload"].get("source_file") or "Unknown") for h in hits])
+        dist = Counter([(h["payload"].get("title") or h["payload"].get("source_file") or "Unknown") for h in diversified])
         print(f"[DEBUG] source distribution: {json.dumps(dict(dist), ensure_ascii=False)}")
-    return hits
+    return diversified
 
-# --- Code block extraction (robust) ---
-
-# ```python / ```py / ```（無語言）皆可
-FENCE_ANY = re.compile(r"```[a-zA-Z]*\s*([\s\S]*?)```", re.MULTILINE)
-
-# 四縮排 code（常見於轉義後的 Markdown）
+# =========================
+# Code block extraction
+# =========================
+FENCE_ANY   = re.compile(r"```[a-zA-Z]*\s*([\s\S]*?)```", re.MULTILINE)
 INDENT_CODE = re.compile(r"(?m)^(?: {4}|\t).+$")
 
 def _extract_after_codeblock_header(text: str) -> List[str]:
-    # 從 "# Code block" 或 "## Code block" 往下抓到下一個標題或文末
     results = []
-    m = re.search(r"(?im)^\s*#{1,6}\s*Code\s+block\s*$", text)
+    m = re.search(r"(?im)^\s*#{1,6}\s*Code\s+block\s*$", text or "")
     if not m:
         return results
     start = m.end()
     tail = text[start:]
     stop = re.search(r"(?im)^\s*#{1,6}\s+\S+", tail)
     segment = tail[: stop.start()] if stop else tail
-    # 優先抓反引號，否則抓四縮排
     fences = FENCE_ANY.findall(segment)
     if fences:
         results.extend([b.strip() for b in fences if b.strip()])
     else:
-        # 合併連續的縮排行
         lines = segment.splitlines()
         buf, cur = [], []
         for ln in lines:
@@ -222,31 +330,25 @@ def extract_code_blocks(texts: Iterable[str], payloads: Iterable[Dict[str, Any]]
     out = []
     for t, p in zip(texts, payloads):
         t = t or ""
-        # 1) 先抓泛用 fenced
         for m in FENCE_ANY.finditer(t):
             block = m.group(1).strip()
             if block:
                 out.append(block)
-        # 2) 專抓 # Code block 段
         out.extend(_extract_after_codeblock_header(t))
-        # 3) 若 source_type=code 或 tags 有 code/examples，抓四縮排塊
         tags = [ (p.get("doc_type") or "").lower() ] + [ (x or "").lower() for x in (p.get("tags") or []) ]
         if "code" in (p.get("source_type") or "").lower() or any(k in tags for k in ["code_snippet","code","examples","example"]):
-            if not FENCE_ANY.search(t):  # 沒有 fenced，才抓縮排塊避免重複
-                blocks = INDENT_CODE.findall(t)
-                if blocks:
-                    # 合併相鄰縮排行
-                    lines = t.splitlines()
-                    buf, cur = [], []
-                    for ln in lines:
-                        if INDENT_CODE.match(ln):
-                            cur.append(ln[4:] if ln.startswith("    ") else ln.lstrip())
-                        else:
-                            if cur:
-                                buf.append("\n".join(cur).strip()); cur = []
-                    if cur:
-                        buf.append("\n".join(cur).strip())
-                    out.extend([b for b in buf if b])
+            if not FENCE_ANY.search(t):
+                lines = t.splitlines()
+                buf, cur = [], []
+                for ln in lines:
+                    if INDENT_CODE.match(ln):
+                        cur.append(ln[4:] if ln.startswith("    ") else ln.lstrip())
+                    else:
+                        if cur:
+                            buf.append("\n".join(cur).strip()); cur = []
+                if cur:
+                    buf.append("\n".join(cur).strip())
+                out.extend([b for b in buf if b])
     return out
 
 def debug_scan_code_blocks(hits: List[Dict[str, Any]], debug: bool=False):
@@ -257,17 +359,14 @@ def debug_scan_code_blocks(hits: List[Dict[str, Any]], debug: bool=False):
         code_docs = sum(1 for p in payloads if (p.get("doc_type") == "code_snippet") or ("code" in (p.get("source_type") or "").lower()))
         print(f"[DEBUG] code docs scanned: {code_docs}, code blocks collected: {len(blocks)}")
 
-# --- OAS parsing (robust) ---
-
-# 寬鬆列出所有 paths 的 key（兩格以上縮排開頭、後接 /something:）
+# =========================
+# OAS parsing / harvesting
+# =========================
 PATH_KEY_RE = re.compile(r'(?m)^\s{2,}(/[^:\s]+)\s*:\s*$')
-
-# 注意：量詞用 {{ }} 轉義，只有 {path} 會被 format 替換
 PATH_BLOCK_FOR_TEMPLATE = (
-    r'(?ms)^\s{{2,}}{path}\s*:\s*\n'   # 行首2+空白  +  路徑  + 冒號換行
-    r'(\s{{4,}}.*?)(?=^\s{{2,}}/|\Z)' # 從下一行的4+空白開始，到下一個同層級 path 或文末
+    r'(?ms)^\s{{2,}}{path}\s*:\s*\n'
+    r'(\s{{4,}}.*?)(?=^\s{{2,}}/|\Z)'
 )
-
 PARAM_NAME_RE = re.compile(r'(?m)^\s*-\s*name:\s*([A-Za-z0-9_]+)\s*$')
 APPEND_ALLOWED_ANY_RE = re.compile(
     r"Allowed\s+fields\s*:\s*([\"'][^\"']+[\"'](?:\s*,\s*[\"'][^\"']+[\"'])*|\w+(?:\s*,\s*\w+)*)",
@@ -281,7 +380,6 @@ def _unquote(s: str) -> str:
     return s
 
 def _split_append_allowed(s: str) -> List[str]:
-    # 支援 'sst','level' / "sst", "level" / sst, level / sst and level
     s = s.replace(" and ", ",")
     parts = [p.strip() for p in s.split(",")]
     return [_unquote(p) for p in parts if p.strip()]
@@ -289,7 +387,6 @@ def _split_append_allowed(s: str) -> List[str]:
 def parse_oas_params(oas_yaml: str) -> Dict[str, Any]:
     if not oas_yaml:
         return {"params": [], "append_allowed": [], "paths": []}
-
     params, allowed, paths = [], [], []
 
     for m in PATH_KEY_RE.finditer(oas_yaml):
@@ -324,11 +421,7 @@ def parse_oas_params(oas_yaml: str) -> Dict[str, Any]:
                 if it and it not in allowed:
                     allowed.append(it)
 
-    return {
-        "params": sorted(params),
-        "append_allowed": sorted(allowed),
-        "paths": sorted(paths),
-    }
+    return {"params": sorted(params), "append_allowed": sorted(allowed), "paths": sorted(paths)}
 
 def collect_api_specs(debug: bool=False) -> List[Dict[str, Any]]:
     flt = Filter(must=[FieldCondition(key="doc_type", match=MatchValue(value="api_spec"))])
@@ -374,17 +467,21 @@ def harvest_oas_whitelist(api_specs: List[Dict[str, Any]], hits: List[Dict[str, 
         print(f"[DEBUG] api_spec docs scanned (rebuilt): {rebuilt}")
     return {"params": sorted(all_params), "append_allowed": sorted(all_append), "paths": sorted(all_paths)}
 
-# ----------------------
+# =========================
 # Prompt & LLM
-# ----------------------
+# =========================
 def pick_need_code(question: str) -> bool:
     return detect_code_intent(question)
 
-def build_prompt(question: str, ctx: List[Dict[str, Any]], need_code: bool,
-                 oas_info: Optional[Dict[str, Any]], strict_api: bool) -> str:
+def build_prompt(question: str,
+                 ctx: List[Dict[str, Any]],
+                 need_code: bool,
+                 oas_info: Optional[Dict[str, Any]],
+                 strict_api: bool,
+                 followup: Optional[Dict[str,str]]=None) -> str:
     sys_rule = (
         "你是 ODB（海洋學門資料庫）助理。請只根據『依據』內容回答；沒有依據就回答「無法在已知資料中找到答案。」"
-        "不得虛構 API 參數或值。不要在正文貼『內部檢索片段』或自行輸出『引用清單/=== 引用 ===』。"
+        "不得虛構 API 參數或值。不要在正文貼『內部檢索片段』、『引用清單』或『=== 引用 ===』。不要重述問題，直接作答。"
     )
     if need_code:
         sys_rule += "若提供程式，請用 ```python 包覆，並依 OpenAPI 規格使用正確的 query 參數。"
@@ -397,7 +494,15 @@ def build_prompt(question: str, ctx: List[Dict[str, Any]], need_code: bool,
         title = m.get("title") or m.get("source_file") or "Unknown"
         ctx_text += f"\n[來源 {i}] {title}\n{h.get('text','')}\n"
 
-    return f"{sys_rule}\n\n問題：{question}\n\n依據：{ctx_text}\n\n請作答："
+    follow = ""
+    if followup:
+        follow = "\n[前文（供參考，若不相干可忽略）]\n"
+        follow += f"上一題：{followup['prev_q']}\n"
+        if followup["prev_ep"]:
+            follow += f"上一答使用 API：{followup['prev_ep']}\n"
+        follow += f"上一答（節錄）：{followup['prev_a']}\n"
+
+    return f"{sys_rule}\n{follow}\n問題：{question}\n\n依據：{ctx_text}\n\n請作答："
 
 async def call_ollama(prompt: str, temperature: float=0.2, max_tokens: int=512) -> str:
     try:
@@ -432,14 +537,15 @@ async def call_llama(prompt: str, temperature: float=0.2, max_tokens: int=512) -
             return data["choices"][0].get("text","")
         return str(data)
 
-# ----------------------
+# =========================
 # Post-processing
-# ----------------------
+# =========================
 CLEAN_PATTERNS = [
     (re.compile(r'(?im)^\s*<\s*/?(system|user|assistant)\s*>\s*$'), ""),
     (re.compile(r'(?im)^\s*引用清單\s*[:：]\s*$'), ""),
     (re.compile(r'(?im)^\s*===\s*引用\s*===\s*$'), ""),
     (re.compile(r'(?im)^===\s*內部檢索片段.*$', re.S), ""),
+    (re.compile(r'(?im)^\s*append\s*[:：].*$'), ""),  # 移除「append：原問題」這種多餘行
 ]
 
 def sanitize_answer(text: str) -> str:
@@ -449,14 +555,17 @@ def sanitize_answer(text: str) -> str:
     text = re.sub(r'(?is)\n+===\s*引用\s*===\s*\n+.*$', "", text).strip()
     text = re.sub(r'\n{3,}', "\n\n", text)
 
-    # 粗暴去重：避免同一段重覆
+    # 去重
     paras = [p.strip() for p in text.split("\n\n") if p.strip()]
     seen, out = set(), []
     for p in paras:
         key = p[:200]
         if key in seen: continue
         seen.add(key); out.append(p)
-    return "\n\n".join(out)
+
+    # 避免只重述問題
+    final = "\n\n".join(out).strip()
+    return final
 
 def post_fix_strict_api(text: str, oas_info: Dict[str, Any]) -> str:
     allowed = set(oas_info.get("params", []))
@@ -511,16 +620,13 @@ def format_citations(hits: List[Dict[str, Any]], question: str = "") -> str:
         bag   = f"{(title or '').lower()} {tags} {text}"
         bag_tokens = set(re.findall(r"[a-zA-Z0-9\u4e00-\u9fff]+", bag))
 
-        # 粗略重疊度
         overlap = len(q_tokens & bag_tokens)
         score = overlap
 
-        # 問題不含 enso → 降權
         if not detect_enso(question):
-            if any(t in tags for t in ["enso","el niño","la niña"]):
+            if any(t in tags for t in ["enso","el niño","la niña","enso basics"]):
                 score -= 3
 
-        # 問題不含 cli/指令 → 降權
         if p.get("doc_type") == "cli_tool_guide" and not any(k in q for k in ["cli","指令","命令","mhw_plot","odbchat"]):
             score -= 2
 
@@ -533,7 +639,7 @@ def format_citations(hits: List[Dict[str, Any]], question: str = "") -> str:
         key = (t, u)
         if key in seen: continue
         seen.add(key)
-        if s < 0:  # 全負分就別列了
+        if s < 0:
             continue
         uniq.append((t,u))
         if len(uniq) >= 5: break
@@ -542,9 +648,9 @@ def format_citations(hits: List[Dict[str, Any]], question: str = "") -> str:
         return "（無）"
     return "\n".join([f"[{i}] {t} — {u}" for i, (t,u) in enumerate(uniq, 1)])
 
-# ----------------------
+# =========================
 # Core QA
-# ----------------------
+# =========================
 async def answer_once(
     question: str,
     llm: str = "llama",
@@ -558,29 +664,32 @@ async def answer_once(
     max_chunks: int = 5,
 ) -> str:
 
-    # 1) 檢索 + booster 重排
+    # 1) 檢索
     hits = query_qdrant(question, topk=topk, debug=debug)
 
-    # Debug: code blocks
+    # 2) 偵測追問（帶入簡短前文）
+    follow = detect_followup(question, history)
+
+    # 3) Debug: code blocks
     debug_scan_code_blocks(hits, debug=debug)
 
-    # 2) 只有在 strict_api 或 問題帶 API/程式意圖時，才去掃 OAS
+    # 4) 只有在 strict_api 或 問題帶 API/程式意圖時，才去掃 OAS
     need_code = detect_code_intent(question)
     need_api  = detect_api_intent(question)
     oas_info: Optional[Dict[str, Any]] = None
 
-    if strict_api or need_api:
+    if strict_api or need_api or need_code:
         api_specs = collect_api_specs(debug=debug)
         oas_info  = harvest_oas_whitelist(api_specs, hits, debug=debug)
 
-    # 3) 控制上下文長度
+    # 5) 控制上下文長度
     reserve = max_tokens + 800
     hits_ctx = clamp_context(hits, max_ctx_tokens=max_ctx_tokens, reserve=reserve)[:max_chunks]
 
-    # 4) Prompt
-    prompt = build_prompt(question, hits_ctx, need_code, oas_info if (strict_api or need_api) else None, strict_api)
+    # 6) Prompt
+    prompt = build_prompt(question, hits_ctx, need_code, oas_info if (strict_api or need_api or need_code) else None, strict_api, follow)
 
-    # 5) Call LLM（只在 400/context 超限時 fallback 一次）
+    # 7) Call LLM（context 過長 400 → 縮半重試一次）
     try:
         if llm == "ollama":
             raw = await call_ollama(prompt, temperature=temp, max_tokens=max_tokens)
@@ -590,7 +699,7 @@ async def answer_once(
         if e.response.status_code == 400 and "context" in (e.response.text or "").lower():
             if debug: print("[DEBUG] llama 400; rebuild with smaller context and retry once …")
             hits_ctx = hits_ctx[: max(1, len(hits_ctx)//2) ]
-            prompt = build_prompt(question, hits_ctx, need_code, oas_info if (strict_api or need_api) else None, strict_api)
+            prompt = build_prompt(question, hits_ctx, need_code, oas_info if (strict_api or need_api or need_code) else None, strict_api, follow)
             if llm == "ollama":
                 raw = await call_ollama(prompt, temperature=temp, max_tokens=max_tokens)
             else:
@@ -598,18 +707,18 @@ async def answer_once(
         else:
             raise
 
-    # 6) 後處理
+    # 8) 後處理
     answer = sanitize_answer(raw)
     if strict_api and oas_info:
         answer = post_fix_strict_api(answer, oas_info)
 
-    # 7) 引用
+    # 9) 引用（依語義重疊過濾）
     cites = format_citations(hits_ctx, question)
     return f"{answer}\n\n=== 引用 ===\n\n{cites}"
 
-# ----------------------
-# Chat
-# ----------------------
+# =========================
+# Chat loop
+# =========================
 async def chat_loop(llm: str, topk: int, temp: float, max_tokens: int,
                     strict_api: bool, debug: bool, max_ctx_tokens: int, max_chunks: int):
     print("Enter '/exit' to quit. Ask your MHW questions.\n")
@@ -628,9 +737,9 @@ async def chat_loop(llm: str, topk: int, temp: float, max_tokens: int,
         print(ans); print()
         history.append((q, ans))
 
-# ----------------------
+# =========================
 # Main
-# ----------------------
+# =========================
 def main():
     ap = argparse.ArgumentParser(description="ODB MHW RAG CLI")
     ap.add_argument("question", nargs="?", default="", help="你的問題（--chat 時可省略）")
@@ -640,7 +749,7 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=512)
     ap.add_argument("--max-chunks", type=int, default=5, help="最多合併多少個 RAG 片段進 prompt")
     ap.add_argument("--ctx", type=int, default=3072, help="模型 context window 預算（用於裁切 RAG 片段）")
-    ap.add_argument("--strict-api", action="store_true", help="嚴格依 OAS 的 params/append 白名單修正 params 區塊")
+    ap.add_argument("--strict-api", action="store_true", help="嚴格依 OAS params/append 白名單修正 code 片段中的 params")
     ap.add_argument("--debug", action="store_true")
     ap.add_argument("--chat", action="store_true")
     args = ap.parse_args()
@@ -664,6 +773,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
