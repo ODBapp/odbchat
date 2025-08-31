@@ -7,25 +7,30 @@ doc_id: "d971ef8bbc81997eae74ee0e555588a6526b0ea1"
 title: ODB MHW API (OpenAPI Spec)
 lang: en
 description: Marine heatwaves OpenAPI specification (ODB)
-tags: [MHW, SST, "SST anomalies", "Thermal Displacement", ODB, OpenAPI, "Marine Heatwaves (MHW)", 全球海洋熱浪, spec]
+tags: [MHW, 程式, SST, "SST anomalies", "Thermal Displacement", ODB, OpenAPI, "Marine Heatwaves (MHW)", 全球海洋熱浪, spec, 資料]
 grid: 0.25
 timescale: monthly
 related_to:
   - doc_id: ["b7cea35aac3358af2e52d9f9079779bfdda0fee7"]
   - collection: "mhw"
 purpose: "提供ODB MHW API OpenAPI specification (OAS)以規格說明 ODB MHW API 如何使用"
-faq: ["如何使用 ODB MHW API?", "如何取得全球海洋熱浪資料?", "Call ODB MHW API endpoint to get timeseries data"]
+faq: ["如何使用 ODB MHW API?", "如何取得全球海洋熱浪資料?", "Call ODB MHW API endpoint to get timeseries data", "畫海溫趨勢變化"]
 content: |
   # Usage Note
   '''
     本文件提供 ODB MHW API (海洋熱浪開放應用程式介面) 的使用說明與規格 (Open API specification, OAS; Swagger documentation)，
-    回答如何以程式或瀏覽器調用全球海洋熱浪資料，或如何使用ODB MHW API問題(列於faq)時應優先引用。
+    回答如何以程式或瀏覽器調用全球海洋熱浪資料或以程式畫出海溫變化趨勢，或如何使用ODB MHW API問題(列於faq)時應優先引用。
     以下API規格書以 OpenAPI 3.1 https://swagger.io/specification/ 標準描述，格式為YAML。包含詳細的API端點、參數、規格、與回應之描述。
     This document provides the usage guide and specifications for the ODB MHW API (Application Programming Interface), 
     serving as the primary reference for programmatic or browser-based access to global MHW data (listed in faq).
     The API specification follows the OpenAPI 3.1 standard (https://swagger.io/specification/), in YAML format, 
     with detailed descriptions of endpoints, parameters, specifications, and responses.
-    舉例說明參數`append`意義，在下方規格書中列舉：
+  '''
+  
+  # Remark
+  
+  '''   
+    ODB MHW API完整地定義在OAS(規格書)中，包括lon0, lat0, lon1, lat1, start, end, append等參數請參考。其中lon0, lat0為必要參數(required)。在此僅舉例說明其中一個參數`append`的意義，於規格書中列舉：
       name: append
       description:
         Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'

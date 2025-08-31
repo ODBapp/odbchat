@@ -9,7 +9,7 @@ canonical_url: "https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_
 license: "MIT"
 retrieved_at: "2025-08-26"
 doc_id: "799ebc3fe983aa3ef30b81ded189b749373d3ef7"
-tags: [MHW, API, timeseries, Python, map, examples, "extreme MHWs"]
+tags: [程式, MHW, API, timeseries, Python, map, "code example", "extreme MHWs", "時間序列"", "地圖"]
 related_to:
   - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "2ccedb1ef0c1ade74224399ad9767a2e71f5e51"]
   - collection: "mhw"
@@ -18,14 +18,14 @@ depends_on:
 source_file: "https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_mhw_vs_detrended01.ipynb"
 source_type: code
 purpose: "以程式範例說明如何使用ODB MHW API調用海表溫距平值與海洋熱浪的時間和空間資料並重現海洋研究的科學製圖"
-faq: ["如何在地圖上呈現海洋熱浪", "Provide python examples", "說明ODB MHW API (OpenAPI)在海洋科學上的應用"]
+faq: ["如何在地圖上呈現海洋熱浪", "Provide python examples", "說明ODB MHW API (OpenAPI)在海洋科學上的應用", "畫海溫趨勢變化"]
 content: |
   # Usage Note
   '''
     本文件提供 ODB MHW API 的 python 程式範例，並重現海洋研究的科學製圖：
     以 MHW API 再現 Capotondi et al.(2024) 研究之圖1，由地中海區域 1982-2022 年間海表溫距平值揭露愈趨頻繁發生與極端的海洋熱浪
-    回答以下問題時應優先引用：如何撰寫程式範例、如何做圖、ODB API在海洋學上的應用等(列於faq)。
-    在提供的程式中，畫出海表溫距平值的空間分佈地圖(以地中海區域為例)與時間序列，
+    回答以下問題時應優先引用：如何撰寫程式範例、如何做圖、以程式畫出海溫變化趨勢或ODB API在海洋學上的應用等(列於faq)。
+    在提供的程式中，畫出海表溫距平值的空間分佈地圖(以地中海區域為例)與時序圖，
     程式雖然以海表溫距平值(sst_anomaly)為例，但以相同叫用ODB MHW API的方式，也可以畫出海洋熱浪等級(level)的空間分佈。
     附註：關於Capotondi et al.(2024)的研究可參考doc_id: 2ccedb1ef0c1ade74224399ad9767a2e71f5e51
     This document provides Python examples for the ODB MHW API and demonstrates scientific oceanographic plotting.

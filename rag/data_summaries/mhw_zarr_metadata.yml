@@ -12,7 +12,7 @@ related_to:
   - doc_id: ["d971ef8bbc81997eae74ee0e555588a6526b0ea1"]
   - collection: "mhw"
 related_api: manuals/odb_mhw_openapi.yml
-tags: [MHW, SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", ODB, 全球海洋熱浪]
+tags: [dataset, MHW, SST, "SST anomalies", "Marine Heatwaves (MHW)", "Thermal Displacement", 全球海洋熱浪]
 description: "Summary of Zarr metadata for Marine Heatwaves (MHW) 0.25 degree monthly data evaluated from 0.25-degree gridded NOAA OISST v2.1, compiled by Ocean Data Bank (ODB)"
 purpose: "The Zarr store the dataset where ODB MHW API gets data from. ODB MHW API從此Zarr store調用資料. The content is the metadata of the Zarr store, so that we can know the longitude (lon)/latitude (lat) and temporal (date) range of ODB MHW API can get. We also know the data variables (td: Thermal Displacement, sst: Sea surface temperature (SST), sst_anomaly (SST anomalies), and level (MHW levels) stored in this Zarr dataset."
 faq: ["ODB MHW API資料的時空範圍與尺度?", "ODB MHW API如何調用資料", "ODB MHW API包含什麼資料、變數或參數"]

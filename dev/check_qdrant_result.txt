@@ -1,0 +1,197 @@
+python .\dev\check_qdrant.py --collection odb_mhw_knowledge_v1
+[INFO] qdrant_client version: unknown
+[INFO] Connecting to Qdrant: localhost:6333, collection=odb_mhw_knowledge_v1
+[INFO] Collection count (exact): 129
+================================================================================
+[COLLECTION SUMMARY] total payloads scanned: 129
+================================================================================
+
+[Top 24] doc_type
+  web_article : 68
+  paper_note : 29
+  cli_tool_guide : 16
+  code_snippet : 12
+  api_spec : 2
+  note : 2
+
+[Top 24] source_type
+  web : 68
+  paper : 29
+  (blank) : 20
+  code : 12
+
+[Top 12] collection
+  mhw : 129
+
+[Top 12] lang
+  en : 81
+  zh_TW : 46
+  (blank) : 2
+
+[Top 12] issuer
+  ODB Project (internal) : 28
+  海洋學門資料庫 Ocean Data Bank (ODB), Taiwan : 21
+  Nature : 18
+  UCAR/NSF NCAR : 14
+  NOAA/National Weather Service : 13
+  MARINE HEATWAVES International Working Group @marineheatwaves.org : 11
+  Commun Earth Environ : 11
+  中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan : 9
+  (blank) : 4
+
+[Top 24] tags (normalized)
+  marine heatwaves (mhw) : 44
+  odb : 39
+  enso basics : 36
+  el niño : 36
+  ecosystem : 34
+  impacts : 34
+  海洋熱浪 : 34
+  海洋生態系統 : 34
+  marine heatwaves : 33
+  mhw : 33
+  oceanic niño index : 30
+  sst anomalies : 29
+  anomalies : 29
+  global warming : 25
+  thermal displacement : 22
+  open data : 21
+  monthly mhw : 18
+  methodology : 18
+  jacox2020 : 18
+  plot mhw : 16
+  marine heatwaves tool : 16
+  cli : 16
+  海洋資料繪圖 : 16
+  工具 : 16
+
+[Code-like docs] 19 / 129  (14.7%)
+[OAS-like docs ] 2 / 129  (1.6%)
+
+[Samples]
+  01. 'Cold & Warm Episodes by Season' | web_article | tags=['ENSO basics', 'El Niño', 'Oceanic Niño Index', '聖嬰現象指數'] | coll=mhw
+  02. '什麼是ENSO?' | web_article | tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流', 'Walker circulation', '聖嬰現象', '反聖嬰'] | coll=mhw
+  03. 'Marine Heatwaves (ODB)' | web_article | tags=['Marine Heatwaves', 'MHW database', 'ODB', 'Open Data', 'SST anomalies', 'method', 'overview'] | coll=mhw
+  04. 'Marine Heatwaves Explained' | web_article | tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming'] | coll=mhw
+  05. 'ODBchat CLI — MHW 快速繪圖指南' | cli_tool_guide | tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖', '工具'] | coll=mhw
+  06. 'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API' | code_snippet | tags=['程式', 'MHW', 'API', 'timeseries', 'Python', 'map', 'code example', 'Marine Heatwaves'] | coll=mhw
+  07. 'Impacts of marine heatwaves' | web_article | tags=['Marine Heatwaves (MHW)', 'Global Warming', 'Ecosystem', 'Regime shift', 'impacts', 'Blob', '海洋熱浪', '海洋生態系統'] | coll=mhw
+  08. 'Thermal displacement by marine heatwaves (Jacox et al., 2020)' | paper_note | tags=['monthly MHW', 'Thermal displacement', 'anomalies', 'methodology', 'ecosystem', 'impacts', 'Jacox2020', 'Marine Heatwaves (MHW)'] | coll=mhw
+
+================================================================================
+[SEARCH PROBES]
+================================================================================
+
+Q: 請分析海洋熱浪對海洋生態的影響   [GEN]
+
+[Top 12] Top-K doc_type
+  web_article : 11
+  cli_tool_guide : 1
+
+[Top 12] Top-K source_type
+  web : 11
+  (blank) : 1
+  #01  score=0.8859  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #02  score=0.8796  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #03  score=0.8724  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #04  score=0.8704  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #05  score=0.8681  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #06  score=0.8638  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+  #07  score=0.8598  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #08  score=0.8598  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+
+Q: 什麼是 ENSO？   [GEN]
+
+[Top 12] Top-K doc_type
+  web_article : 12
+
+[Top 12] Top-K source_type
+  web : 12
+  #01  score=0.9190  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #02  score=0.9107  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #03  score=0.8927  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #04  score=0.8927  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+  #05  score=0.8916  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+  #06  score=0.8903  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #07  score=0.8890  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #08  score=0.8819  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+
+Q: Marine heatwaves impact overview   [GEN]
+
+[Top 12] Top-K doc_type
+  web_article : 10
+  paper_note : 2
+
+[Top 12] Top-K source_type
+  web : 10
+  paper : 2
+  #01  score=0.9202  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #02  score=0.9161  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #03  score=0.9086  [paper_note]  'Thermal displacement by marine heatwaves (Jacox et al., 2020)'  tags=['monthly MHW', 'Thermal displacement', 'anomalies', 'methodology', 'ecosystem']
+  #04  score=0.9069  [web_article]  'Impacts of marine heatwaves'  tags=['Marine Heatwaves (MHW)', 'Global Warming', 'Ecosystem', 'Regime shift', 'impacts']
+  #05  score=0.9065  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'MHW database', 'ODB', 'Open Data', 'SST anomalies']
+  #06  score=0.9018  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #07  score=0.8991  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'MHW database', 'ODB', 'Open Data', 'SST anomalies']
+  #08  score=0.8962  [paper_note]  'A global overview of marine heatwaves in a changing climate (Capotondi et al., 2024)'  tags=['MHW', 'extreme MHWs', 'anomalies', 'review', 'ecosystem']
+
+Q: 請用程式畫出台灣附近 2024 年的 MHW 等級時間序列   [CODE]
+
+[Top 12] Top-K doc_type
+  web_article : 6
+  cli_tool_guide : 4
+  note : 1
+  paper_note : 1
+
+[Top 12] Top-K source_type
+  web : 6
+  (blank) : 5
+  paper : 1
+  #01  score=0.8786  [note]  'mhw_zarr_metadata.yml'  tags=['dataset', 'MHW', 'SST', 'SST anomalies', 'Marine Heatwaves (MHW)']
+  #02  score=0.8781  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #03  score=0.8715  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #04  score=0.8688  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #05  score=0.8688  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #06  score=0.8675  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #07  score=0.8634  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #08  score=0.8594  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+
+Q: How to use ODB MHW API to fetch monthly SST anomalies near Taiwan? Provide Python example.   [CODE]
+
+[Top 12] Top-K doc_type
+  code_snippet : 4
+  web_article : 3
+  api_spec : 2
+  cli_tool_guide : 2
+  note : 1
+
+[Top 12] Top-K source_type
+  (blank) : 5
+  code : 4
+  web : 3
+  #01  score=0.9145  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #02  score=0.9123  [api_spec]  'ODB MHW API (OpenAPI Spec)'  tags=['MHW', '程式', 'SST', 'SST anomalies', 'Thermal Displacement']
+  #03  score=0.9076  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #04  score=0.9067  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #05  score=0.9059  [note]  'mhw_zarr_metadata.yml'  tags=['dataset', 'MHW', 'SST', 'SST anomalies', 'Marine Heatwaves (MHW)']
+  #06  score=0.8961  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #07  score=0.8851  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #08  score=0.8801  [api_spec]  'ODB MHW API (OpenAPI Spec) (OAS)'  tags=['MHW', '程式', 'SST', 'SST anomalies', 'Thermal Displacement']
+
+Q: 用 Python 下載 ODB MHW API 的 CSV 並畫圖   [CODE]
+
+[Top 12] Top-K doc_type
+  cli_tool_guide : 6
+  code_snippet : 4
+  api_spec : 1
+  note : 1
+
+[Top 12] Top-K source_type
+  (blank) : 8
+  code : 4
+  #01  score=0.8996  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #02  score=0.8930  [api_spec]  'ODB MHW API (OpenAPI Spec)'  tags=['MHW', '程式', 'SST', 'SST anomalies', 'Thermal Displacement']
+  #03  score=0.8901  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #04  score=0.8870  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #05  score=0.8825  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #06  score=0.8767  [note]  'mhw_zarr_metadata.yml'  tags=['dataset', 'MHW', 'SST', 'SST anomalies', 'Marine Heatwaves (MHW)']
+  #07  score=0.8741  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']

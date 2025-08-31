@@ -13,4 +13,5 @@
 #### v0.1.7 Setup RAG docs/n2/rag_cli.py to test ingested RAG doc
 #### v0.1.8 Setup RAG docs with FAQ, purpose/n3/ingest qdrant with overwite/additive mode
 #### v0.1.9 New Ingestion so that it can handle multiple YAML with OAS/and rag_cli.py can find OAS parameters/n4
-
+    - A temporary version to improve rag_cli.py capabilities and analysis Qdrant hits/n5,n6
+#### v0.2.0 More statble LLM chat combine with code and explin mode. Better restructure by checking Qdrant statistics/n7

@@ -16,12 +16,12 @@ related_to:
 source_file: "web_docs/md/mhw-impacts_marineheatwaves-org_html_en.md"
 source_type: web
 version: v1
-purpose: "提供海洋熱浪造成生態系統衝擊等全球性影響相關科普知識"
+purpose: "提供海洋熱浪造成生態系統衝擊等全球性影響"
 faq: ["What is the Blob and why does it matter", "海洋熱浪對海草森林造成的長期影響", "關注海洋熱浪的重要性"]
 content: |
   # Usage Note
   '''
-    本文件提供海洋熱浪對全球與海洋生態系統造成的衝擊與長期影響等綜合介紹，在回答海洋熱浪相關科普問題可優先引用（列於 FAQ）。
+    本文件提供海洋熱浪對全球與海洋生態系統造成的衝擊與長期影響等綜合介紹，在回答海洋熱浪影響之描述性問題可優先引用（列於 FAQ）。
     This document provides a general introduction to marine heatwaves global impacts, especially on marine ecosystems.
     It should be the primary reference for answering MHW impacts related popsci topics (listed in FAQ).
   '''
