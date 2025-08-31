@@ -25,7 +25,12 @@ content: |
     serving as the primary reference for programmatic or browser-based access to global MHW data (listed in faq).
     The API specification follows the OpenAPI 3.1 standard (https://swagger.io/specification/), in YAML format, 
     with detailed descriptions of endpoints, parameters, specifications, and responses.
-    舉例說明參數`append`意義，在下方規格書中列舉：
+  '''
+  
+  # Remark
+  
+  '''   
+    ODB MHW API完整地定義在OAS(規格書)中，包括lon0, lat0, lon1, lat1, start, end, append等參數請參考。其中lon0, lat0為必要參數(required)。在此僅舉例說明其中一個參數`append`的意義，於規格書中列舉：
       name: append
       description:
         Data fields to append, separated by commas. Allowed fields: 'sst', 'sst_anomaly', 'level', 'td'

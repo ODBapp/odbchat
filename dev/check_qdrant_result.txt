@@ -1,336 +1,197 @@
-Qdrant 查詢調試工具
-==================================================
-=== Collection Statistics ===
-Collection: odb_mhw_knowledge_v1
-Vector count: 144
-Vector size: 384
-Distance: Cosine
+python .\dev\check_qdrant.py --collection odb_mhw_knowledge_v1
+[INFO] qdrant_client version: unknown
+[INFO] Connecting to Qdrant: localhost:6333, collection=odb_mhw_knowledge_v1
+[INFO] Collection count (exact): 129
+================================================================================
+[COLLECTION SUMMARY] total payloads scanned: 129
+================================================================================
 
-=== Payload Distribution ===
-Doc Types:
-  cli_tool_guide: 10
-  code_snippet: 17
-  note: 1
-  paper_note: 21
-  web_article: 51
+[Top 24] doc_type
+  web_article : 68
+  paper_note : 29
+  cli_tool_guide : 16
+  code_snippet : 12
+  api_spec : 2
+  note : 2
 
-Collections:
-  mhw: 100
+[Top 24] source_type
+  web : 68
+  paper : 29
+  (blank) : 20
+  code : 12
 
-Source Folders:
-  data_summaries: 1
-  https:: 38
-  manuals: 1
-  rag\manuals\odbchat_cli_manual.yml: 9
-  web_docs: 51
+[Top 12] collection
+  mhw : 129
 
-Titles (top 10):
-  Marine Heatwaves (ODB): 16
-  Thermal displacement by marine heatwaves (Jacox et al., 2020): 14
-  Cold & Warm Episodes by Season: 11
-  ODBchat CLI — MHW 快速繪圖指南: 10
-  Reproduce SCI papaer (Capotondi et al., 2024): Plotting SST anomalies distribution map and timeseries of the Mediterranean region by using ODB MHW API: 9
-  Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API: 8
-  A global overview of marine heatwaves in a changing climate (Capotondi et al., 2024): 7
-  Nino SST Indices (Nino 1+2, 3, 3.4, 4; ONI and TNI): 7
-  什麼是ENSO?: 6
-  Marine Heatwaves Explained: 4
+[Top 12] lang
+  en : 81
+  zh_TW : 46
+  (blank) : 2
 
-=== Checking specific folders ===
+[Top 12] issuer
+  ODB Project (internal) : 28
+  海洋學門資料庫 Ocean Data Bank (ODB), Taiwan : 21
+  Nature : 18
+  UCAR/NSF NCAR : 14
+  NOAA/National Weather Service : 13
+  MARINE HEATWAVES International Working Group @marineheatwaves.org : 11
+  Commun Earth Environ : 11
+  中華民國交通部中央氣象署 Central Weather Administration (CWA), Taiwan : 9
+  (blank) : 4
 
-Checking folder: code_snippets
-  Error: name 'models' is not defined
+[Top 24] tags (normalized)
+  marine heatwaves (mhw) : 44
+  odb : 39
+  enso basics : 36
+  el niño : 36
+  ecosystem : 34
+  impacts : 34
+  海洋熱浪 : 34
+  海洋生態系統 : 34
+  marine heatwaves : 33
+  mhw : 33
+  oceanic niño index : 30
+  sst anomalies : 29
+  anomalies : 29
+  global warming : 25
+  thermal displacement : 22
+  open data : 21
+  monthly mhw : 18
+  methodology : 18
+  jacox2020 : 18
+  plot mhw : 16
+  marine heatwaves tool : 16
+  cli : 16
+  海洋資料繪圖 : 16
+  工具 : 16
 
-Checking folder: data_summaries
-  Error: name 'models' is not defined
+[Code-like docs] 19 / 129  (14.7%)
+[OAS-like docs ] 2 / 129  (1.6%)
 
-Checking folder: manifests
-  Error: name 'models' is not defined
+[Samples]
+  01. 'Cold & Warm Episodes by Season' | web_article | tags=['ENSO basics', 'El Niño', 'Oceanic Niño Index', '聖嬰現象指數'] | coll=mhw
+  02. '什麼是ENSO?' | web_article | tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流', 'Walker circulation', '聖嬰現象', '反聖嬰'] | coll=mhw
+  03. 'Marine Heatwaves (ODB)' | web_article | tags=['Marine Heatwaves', 'MHW database', 'ODB', 'Open Data', 'SST anomalies', 'method', 'overview'] | coll=mhw
+  04. 'Marine Heatwaves Explained' | web_article | tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming'] | coll=mhw
+  05. 'ODBchat CLI — MHW 快速繪圖指南' | cli_tool_guide | tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖', '工具'] | coll=mhw
+  06. 'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API' | code_snippet | tags=['程式', 'MHW', 'API', 'timeseries', 'Python', 'map', 'code example', 'Marine Heatwaves'] | coll=mhw
+  07. 'Impacts of marine heatwaves' | web_article | tags=['Marine Heatwaves (MHW)', 'Global Warming', 'Ecosystem', 'Regime shift', 'impacts', 'Blob', '海洋熱浪', '海洋生態系統'] | coll=mhw
+  08. 'Thermal displacement by marine heatwaves (Jacox et al., 2020)' | paper_note | tags=['monthly MHW', 'Thermal displacement', 'anomalies', 'methodology', 'ecosystem', 'impacts', 'Jacox2020', 'Marine Heatwaves (MHW)'] | coll=mhw
 
-Checking folder: manuals
-  Error: name 'models' is not defined
+================================================================================
+[SEARCH PROBES]
+================================================================================
 
-Checking folder: papers
-  Error: name 'models' is not defined
+Q: 請分析海洋熱浪對海洋生態的影響   [GEN]
 
-==================================================
-=== Query Results for: '海洋生物是否受海洋熱浪的影響' ===
-Query vector dimension: 384
-Query vector sample: [0.008094925433397293, -0.03436405584216118, 0.012093381956219673, -0.027857497334480286, 0.02907431498169899]...
+[Top 12] Top-K doc_type
+  web_article : 11
+  cli_tool_guide : 1
 
-Found 5 results:
+[Top 12] Top-K source_type
+  web : 11
+  (blank) : 1
+  #01  score=0.8859  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #02  score=0.8796  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #03  score=0.8724  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #04  score=0.8704  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #05  score=0.8681  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #06  score=0.8638  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+  #07  score=0.8598  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #08  score=0.8598  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
 
-#1 [Score: 0.8758]
-  Title: 什麼是ENSO?
-  Doc Type: web_article
-  Source: web_docs/md/ENSO-ONI-SOI_CWA_html_zh.md
-  Chunk ID: 2
-  Text Preview: 太平洋海溫與氣壓相較於常年氣候平均值的差異特徵，也就是所謂的距平值（註），ENSO可分為聖嬰、反聖嬰和中性三種狀態，聖嬰現象只是其中的一種狀態而已。  從海洋和大氣特徵來看，聖嬰現象在熱帶「中－東」太...
+Q: 什麼是 ENSO？   [GEN]
 
-#2 [Score: 0.8729]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_zh.md
-  Chunk ID: 2
-  Text Preview: 25844)，未來全球海洋熱浪事件不僅頻率將增加，強度與持續時間也將上升。 面對愈來愈頻繁發生的海洋熱浪 ([Frölicher et al. 2018](https://www.nature.com...
+[Top 12] Top-K doc_type
+  web_article : 12
 
-#3 [Score: 0.8715]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_zh.md
-  Chunk ID: 1
-  Text Preview: 的資料 ([Huang et al. 2021](https://journals.ametsoc.org/view/journals/clim/34/8/JCLI-D-20-0166.1.xml))...
+[Top 12] Top-K source_type
+  web : 12
+  #01  score=0.9190  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #02  score=0.9107  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #03  score=0.8927  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #04  score=0.8927  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+  #05  score=0.8916  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
+  #06  score=0.8903  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #07  score=0.8890  [web_article]  '什麼是ENSO?'  tags=['ENSO basics', 'Southern Oscillation', 'El Niño', 'La Niña', '沃克環流']
+  #08  score=0.8819  [web_article]  '聖嬰現象(ENSO) & 什麼是ENSO?'  tags=['ENSO basics', 'El Niño', 'La Niña', 'Oceanic Niño Index', '聖嬰現象']
 
-#4 [Score: 0.8655]
-  Title: Marine Heatwaves Explained
-  Doc Type: web_article
-  Source: web_docs/md/mhw-daily_marineheatwaves-org_html_en.md
-  Chunk ID: 0
-  Text Preview: # Usage Note '''   本文件提供較常見的每日(daily)海洋熱浪(MHW)定義、計算方法、統計值與現況等綜合介紹，在回答海洋熱浪相關科普問題可優先引用(列於faq)。   注意：本文...
+Q: Marine heatwaves impact overview   [GEN]
 
-#5 [Score: 0.8645]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_zh.md
-  Chunk ID: 3
-  Text Preview: 近海東經 122.625 度、北緯 25.375 度，2020 一月至今的海洋熱浪分級時間序列。  ## Method  ### ODB 海洋熱浪計算方法與定義  ### Step A  使用 NOA...
+[Top 12] Top-K doc_type
+  web_article : 10
+  paper_note : 2
 
-Source folder distribution in results:
-  web_docs: 5
+[Top 12] Top-K source_type
+  web : 10
+  paper : 2
+  #01  score=0.9202  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #02  score=0.9161  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #03  score=0.9086  [paper_note]  'Thermal displacement by marine heatwaves (Jacox et al., 2020)'  tags=['monthly MHW', 'Thermal displacement', 'anomalies', 'methodology', 'ecosystem']
+  #04  score=0.9069  [web_article]  'Impacts of marine heatwaves'  tags=['Marine Heatwaves (MHW)', 'Global Warming', 'Ecosystem', 'Regime shift', 'impacts']
+  #05  score=0.9065  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'MHW database', 'ODB', 'Open Data', 'SST anomalies']
+  #06  score=0.9018  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #07  score=0.8991  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'MHW database', 'ODB', 'Open Data', 'SST anomalies']
+  #08  score=0.8962  [paper_note]  'A global overview of marine heatwaves in a changing climate (Capotondi et al., 2024)'  tags=['MHW', 'extreme MHWs', 'anomalies', 'review', 'ecosystem']
 
+Q: 請用程式畫出台灣附近 2024 年的 MHW 等級時間序列   [CODE]
 
-==================================================
-=== Query Results for: 'marine heatwave biological impact' ===
-Query vector dimension: 384
-Query vector sample: [-0.02020191214978695, 0.021282512694597244, 0.063535176217556, -0.023610364645719528, 0.0783180445432663]...
+[Top 12] Top-K doc_type
+  web_article : 6
+  cli_tool_guide : 4
+  note : 1
+  paper_note : 1
 
-Found 5 results:
+[Top 12] Top-K source_type
+  web : 6
+  (blank) : 5
+  paper : 1
+  #01  score=0.8786  [note]  'mhw_zarr_metadata.yml'  tags=['dataset', 'MHW', 'SST', 'SST anomalies', 'Marine Heatwaves (MHW)']
+  #02  score=0.8781  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #03  score=0.8715  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #04  score=0.8688  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #05  score=0.8688  [web_article]  'Marine Heatwaves Explained'  tags=['MHW', 'Marine Heatwaves (MHW)', 'Global Warming']
+  #06  score=0.8675  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #07  score=0.8634  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #08  score=0.8594  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
 
-#1 [Score: 0.9307]
-  Title: Impacts of marine heatwaves
-  Doc Type: web_article
-  Source: web_docs/md/mhw-impacts_marineheatwaves-org_html_en.md
-  Chunk ID: 2
-  Text Preview: o high levels of abalone mortality in Tasmania. Another MHW in the Pacific Ocean caused mass mortali...
+Q: How to use ODB MHW API to fetch monthly SST anomalies near Taiwan? Provide Python example.   [CODE]
 
-#2 [Score: 0.9213]
-  Title: Impacts of marine heatwaves
-  Doc Type: web_article
-  Source: web_docs/md/mhw-impacts_marineheatwaves-org_html_en.md
-  Chunk ID: 1
-  Text Preview: warm waters of a MHW, such as this tropical fish found off Tasmania during the 2015/16 event.       ...
+[Top 12] Top-K doc_type
+  code_snippet : 4
+  web_article : 3
+  api_spec : 2
+  cli_tool_guide : 2
+  note : 1
 
-#3 [Score: 0.9170]
-  Title: Marine Heatwaves Explained
-  Doc Type: web_article
-  Source: web_docs/md/mhw-daily_marineheatwaves-org_html_en.md
-  Chunk ID: 1
-  Text Preview: n and these are known as marine heatwaves, or MHWs. These extreme warming events can have significan...
+[Top 12] Top-K source_type
+  (blank) : 5
+  code : 4
+  web : 3
+  #01  score=0.9145  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #02  score=0.9123  [api_spec]  'ODB MHW API (OpenAPI Spec)'  tags=['MHW', '程式', 'SST', 'SST anomalies', 'Thermal Displacement']
+  #03  score=0.9076  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #04  score=0.9067  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #05  score=0.9059  [note]  'mhw_zarr_metadata.yml'  tags=['dataset', 'MHW', 'SST', 'SST anomalies', 'Marine Heatwaves (MHW)']
+  #06  score=0.8961  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #07  score=0.8851  [web_article]  'Marine Heatwaves (ODB)'  tags=['Marine Heatwaves', 'ODB', 'Open Data', '開放資料', '海洋熱浪資料庫']
+  #08  score=0.8801  [api_spec]  'ODB MHW API (OpenAPI Spec) (OAS)'  tags=['MHW', '程式', 'SST', 'SST anomalies', 'Thermal Displacement']
 
-#4 [Score: 0.9158]
-  Title: Impacts of marine heatwaves
-  Doc Type: web_article
-  Source: web_docs/md/mhw-impacts_marineheatwaves-org_html_en.md
-  Chunk ID: 0
-  Text Preview: # Usage Note '''   本文件提供海洋熱浪對全球與海洋生態系統造成的衝擊與長期影響等綜合介紹，在回答海洋熱浪相關科普問題可優先引用（列於 FAQ）。   This document pr...
+Q: 用 Python 下載 ODB MHW API 的 CSV 並畫圖   [CODE]
 
-#5 [Score: 0.9048]
-  Title: Thermal displacement by marine heatwaves (Jacox et al., 2020)
-  Doc Type: paper_note
-  Source: https://doi.org/10.1038/s41586-020-2534-z
-  Chunk ID: 1
-  Text Preview: nce.   The document covers important definitions, methodologies, and limitations — including whether...
+[Top 12] Top-K doc_type
+  cli_tool_guide : 6
+  code_snippet : 4
+  api_spec : 1
+  note : 1
 
-Source folder distribution in results:
-  https:: 1
-  web_docs: 4
-
-
-==================================================
-=== Query Results for: 'code example' ===
-Query vector dimension: 384
-Query vector sample: [-0.07301653176546097, -0.003524571191519499, 0.022139618173241615, -0.04578033462166786, 0.0016464573564007878]...
-
-Found 5 results:
-
-#1 [Score: 0.8342]
-  Title: Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb
-  Chunk ID: 11
-  Text Preview: w=1) axes[1].set_ylabel("SST Anomaly from MHW API(°C)") axes[1].legend(["Niño 3.4 SST Anomaly from O...
-
-#2 [Score: 0.8210]
-  Title: ODBchat CLI — MHW 快速繪圖指南
-  Doc Type: cli_tool_guide
-  Source: rag\manuals\odbchat_cli_manual.yml
-  Chunk ID: 1
-  Text Preview: 直接顯示）...
-
-#3 [Score: 0.8199]
-  Title: Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb
-  Chunk ID: 10
-  Text Preview: nino_mean = ydata.groupby("date")["sst_anomaly"].mean() nino_mean.index = pd.to_datetime(nino_mean.i...
-
-#4 [Score: 0.8194]
-  Title: Reproduce SCI papaer (Capotondi et al., 2024): Plotting SST anomalies distribution map and timeseries of the Mediterranean region by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_mhw_vs_detrended01.ipynb
-  Chunk ID: 1
-  Text Preview: ing, or ODB API applications in oceanography (listed in faq).   The code generates spatial and time ...
-
-#5 [Score: 0.8186]
-  Title: ODBchat CLI — MHW 快速繪圖指南
-  Doc Type: cli_tool_guide
-  Source: rag\manuals\odbchat_cli_manual.yml
-  Chunk ID: 0
-  Text Preview: ### 13. 速查表（Cheatsheet）      ```text   # A) 時序：台灣外海、兩段期間   /mhw --bbox 119,20,122,23 --fields sst,ss...
-
-Source folder distribution in results:
-  https:: 3
-  rag\manuals\odbchat_cli_manual.yml: 2
-
-
-==================================================
-=== Query Results for: 'data summary' ===
-Query vector dimension: 384
-Query vector sample: [0.015769075602293015, -0.027137797325849533, 0.0510651171207428, -0.012950041331350803, 0.02355104498565197]...
-
-Found 5 results:
-
-#1 [Score: 0.8450]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_zh.md
-  Chunk ID: 6
-  Text Preview: 0.5337085723876953,  120.875,25.375,2023-06-01,1,27.591667,1.1035003662109375,141.22131  120.875,25....
-
-#2 [Score: 0.8376]
-  Title: Reproduce SCI papaer (Capotondi et al., 2024): Plotting SST anomalies distribution map and timeseries of the Mediterranean region by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_mhw_vs_detrended01.ipynb
-  Chunk ID: 14
-  Text Preview: regional_mean_detrended.index,     percentile_90_detrended,  # Lower bound (90th percentile line)   ...
-
-#3 [Score: 0.8340]
-  Title: Reproduce SCI papaer (Capotondi et al., 2024): Plotting SST anomalies distribution map and timeseries of the Mediterranean region by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_mhw_vs_detrended01.ipynb
-  Chunk ID: 11
-  Text Preview: maller region # regional_data = remove_seasonal_cycle(regional_data, 'sst_anomaly') # regional_mean_...
-
-#4 [Score: 0.8304]
-  Title: Cold & Warm Episodes by Season
-  Doc Type: web_article
-  Source: web_docs/md/oni_NOAA_html_en.md
-  Chunk ID: 12
-  Text Preview: | **1.1** | **0.7** | 0.4 | 0.2 | 0.0 | \-0.1 | \-0.2 | \-0.3 | \-0.4 | \-0.5 | | **2025** | \-0.6 |...
-
-#5 [Score: 0.8302]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_en.md
-  Chunk ID: 12
-  Text Preview: ea to display:         -   The time series (blue line) which are the mean values within the comparis...
-
-Source folder distribution in results:
-  https:: 2
-  web_docs: 3
-
-
-==================================================
-=== Query Results for: 'manual guide' ===
-Query vector dimension: 384
-Query vector sample: [-0.03573821112513542, -0.01474130991846323, 0.04691880941390991, -0.010049770586192608, 0.06301853805780411]...
-
-Found 5 results:
-
-#1 [Score: 0.8191]
-  Title: Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb
-  Chunk ID: 11
-  Text Preview: w=1) axes[1].set_ylabel("SST Anomaly from MHW API(°C)") axes[1].legend(["Niño 3.4 SST Anomaly from O...
-
-#2 [Score: 0.8066]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_en.md
-  Chunk ID: 11
-  Text Preview: p to the **previous month**.     -   For example:         -   March 10: Latest data available is fro...
-
-#3 [Score: 0.8042]
-  Title: ODBchat CLI — MHW 快速繪圖指南
-  Doc Type: cli_tool_guide
-  Source: rag\manuals\odbchat_cli_manual.yml
-  Chunk ID: 1
-  Text Preview: 直接顯示）...
-
-#4 [Score: 0.8007]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_en.md
-  Chunk ID: 12
-  Text Preview: ea to display:         -   The time series (blue line) which are the mean values within the comparis...
-
-#5 [Score: 0.7962]
-  Title: Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb
-  Chunk ID: 10
-  Text Preview: nino_mean = ydata.groupby("date")["sst_anomaly"].mean() nino_mean.index = pd.to_datetime(nino_mean.i...
-
-Source folder distribution in results:
-  https:: 2
-  rag\manuals\odbchat_cli_manual.yml: 1
-  web_docs: 2
-
-
-==================================================
-=== Query Results for: 'paper research' ===
-Query vector dimension: 384
-Query vector sample: [-0.09262620657682419, -0.014684261754155159, 0.018619205802679062, -0.003284252481535077, 0.03459482640028]...
-
-Found 5 results:
-
-#1 [Score: 0.8058]
-  Title: Reproduce SCI papaer (Capotondi et al., 2024): Plotting SST anomalies distribution map and timeseries of the Mediterranean region by using ODB MHW API
-  Doc Type: code_snippet
-  Source: https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_mhw_vs_detrended01.ipynb
-  Chunk ID: 9
-  Text Preview: , sst_anomaly_grid.index)  m.drawmapboundary(fill_color='white')  cs = m.contourf(lon, lat, sst_anom...
-
-#2 [Score: 0.8028]
-  Title: ODBchat CLI — MHW 快速繪圖指南
-  Doc Type: cli_tool_guide
-  Source: rag\manuals\odbchat_cli_manual.yml
-  Chunk ID: 1
-  Text Preview: 直接顯示）...
-
-#3 [Score: 0.8027]
-  Title: Marine Heatwaves (ODB)
-  Doc Type: web_article
-  Source: web_docs/md/mhw_odb_html_en.md
-  Chunk ID: 12
-  Text Preview: ea to display:         -   The time series (blue line) which are the mean values within the comparis...
-
-#4 [Score: 0.7978]
-  Title: ODBchat CLI — MHW 快速繪圖指南
-  Doc Type: cli_tool_guide
-  Source: rag\manuals\odbchat_cli_manual.yml
-  Chunk ID: 0
-  Text Preview: ### 9. RAG 知識庫建議切片      為了讓助理能「引導使用者組指令」，建議將下列片段納入向量索引：      - **命令模板**：     - 時序：`/mhw --bbox <…> -...
-
-#5 [Score: 0.7978]
-  Title: ODBchat CLI — MHW 快速繪圖指南
-  Doc Type: cli_tool_guide
-  Source: rag\manuals\odbchat_cli_manual.yml
-  Chunk ID: 0
-  Text Preview: ### 8. 繪圖設計細節      #### 8.1 時序圖（`mhw_plot.py`）   - 版面：兩子圖、共享 X 軸（日期），**寬形**（預設 ~12×4）。   - `sst_anom...
-
-Source folder distribution in results:
-  https:: 1
-  rag\manuals\odbchat_cli_manual.yml: 3
-  web_docs: 1
+[Top 12] Top-K source_type
+  (blank) : 8
+  code : 4
+  #01  score=0.8996  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #02  score=0.8930  [api_spec]  'ODB MHW API (OpenAPI Spec)'  tags=['MHW', '程式', 'SST', 'SST anomalies', 'Thermal Displacement']
+  #03  score=0.8901  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #04  score=0.8870  [cli_tool_guide]  'ODBchat CLI — MHW 快速繪圖指南'  tags=['Plot MHW', 'Marine Heatwaves Tool', 'CLI', 'ODB', '海洋資料繪圖']
+  #05  score=0.8825  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
+  #06  score=0.8767  [note]  'mhw_zarr_metadata.yml'  tags=['dataset', 'MHW', 'SST', 'SST anomalies', 'Marine Heatwaves (MHW)']
+  #07  score=0.8741  [code_snippet]  'Example: Plotting SST anomalies distribution map and timeseries by using ODB MHW API'  tags=['程式', 'MHW', 'API', 'timeseries', 'Python']
