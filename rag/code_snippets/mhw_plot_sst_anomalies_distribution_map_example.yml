@@ -32,6 +32,8 @@ content: |
       * A time series of the Niño Index (ONI) from 1982 to present, compared with NOAA’s ONI data (1950–present)
         (refer to doc_id: c4aca131c497500a668336dacb65f08ade88077a for related info)
     This example use "sst_anomaly" (SST anomalies) as example, and in the same way we can plot map or timeseries for "sst" (Sea Surface Temperature, SST) by fetching ODB MHW API as well.
+    請注意ODB MHW API輸出的時間參數是'date', 若需要對時間畫圖(時序圖)，x-axis須選擇'date'
+          輸出的經緯度座標參數則是'lon', 'lat'，若需要畫出地圖，須採用'lon', 'lat'對應的資料值。
   '''
 
   # Code block  
@@ -52,9 +54,10 @@ content: |
   os.chdir(Path().resolve()) 
   print(os.getcwd())
   
-  # Step 1: Open API Fetch
+  # Step 1: ODB MHW API (OpenAPI) Fetch according to its OpenAPI Specification (OAS)
+  # Find API server at OAS: https://api.odb.ntu.edu.tw/hub/swagger?node=odb_mhw_v1
   def fetch_mhw_data(lon0, lat0, lon1, lat1, start, end):
-      url = f"https://eco.odb.ntu.edu.tw/api/mhw" # Find API server at API manual: https://api.odb.ntu.edu.tw/hub/swagger?node=odb_mhw_v1
+      url = f"https://eco.odb.ntu.edu.tw/api/mhw"
       params = {
           "lon0": lon0,
           "lat0": lat0,
@@ -71,6 +74,20 @@ content: |
           print("Failed to fetch data:", response.text)
           return None
   
+  # When fetching ODB MHW data variables sst (SST), sst_anomaly (SST anomalies), and level (MHW levels), you got API response like:
+  '''
+  [
+    {
+    "lon": 135.125,       # longitude 
+    "lat": 15.125,        # latitude
+    "date": "2024-12-01", # temporal (date) field
+    "level": 1,           # data fields including 'level', 'sst', 'sst_anomaly' which defined by the `append` parameter
+    "sst": 29.0103206634522,
+    "sst_anomaly": 0.9724
+    }, 
+  ]
+  '''
+
   # region for Niño 3.4 (5°N–5°S, 170°W–120°W)
   lon0, lon1 = -170, -120  
   lat0, lat1 = -5, 5
@@ -213,19 +230,16 @@ content: |
   start_year, end_year = 1982, 2024  # Iterate year range to get MHW data
   ylon0, ylat0, ylon1, ylat1 = -170, -5, -120, 5  # Niño 3.4 region
   ydata = fetch_yearly_data(ylon0, ylat0, ylon1, ylat1, start_year, end_year)
-  ydata.to_csv("./data/examples/nino34_mhw_1982-2024.csv", index=False) # This file may excceed 300MB, just too large to store in GitHub 
 
   nino_mean = ydata.groupby("date")["sst_anomaly"].mean()
   nino_mean.index = pd.to_datetime(nino_mean.index)
   print(nino_mean.head())
   print(len(nino_mean))
-  nino_mean.to_csv("./data/examples/nino34_mean_1982-2024.csv", index=True)
   
   sst_mean = ydata.groupby("date")["sst"].mean()
   sst_mean.index = pd.to_datetime(sst_mean.index)
   print(sst_mean.head())
   print(len(sst_mean))
-  sst_mean.to_csv("./data/examples/nino34_sst_1982-2024.csv", index=True)
 
   fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
   

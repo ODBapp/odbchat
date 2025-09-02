@@ -2,14 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-rag_cli.py — ODBchat RAG CLI
-Goal:
-- 讓 LLM 在 OAS 白名單下自行推論 endpoint 與參數（含空間範圍/格式），避免硬編對照表。
-- 先由 LLM 判斷本題「需要程式」或「不需要程式」；若使用者明說不要程式/除了程式之外，就走解說流。
-- CSV：不硬指定 /csv；要求 LLM 根據 OAS 選擇「含 csv 的 endpoint」或「format=csv（若 OAS 允許）」。
-- append：若使用者同時點名多個變數，請 LLM 全納入；並以白名單檢核。
-- 嚴禁虛構參數/端點；程式碼必須用 requests.get(..., params=...)；禁止手刻 query string。
-- 正文用繁體中文，避免簡體用語；正文不使用 [1][2] 編號，參考資料統一列在文末。
+rag_cli.py — ODBchat RAG CLI (rev: unified fast path)
+- 以 LLM 做「分類(code/explain)」→「OAS 內規劃」→（必要時）「最小補齊」
+- 預設只需 2 次 LLM 呼叫（分類 + 規劃/或解說）；只有規劃驗證失敗或明顯缺值才呼叫第 3 次補齊
+- 嚴格遵守 OAS 白名單（端點/參數/enum/append）
+- 程式碼生成使用 requests.get(..., params=...)；禁止手刻 query string
+- CSV 預設不使用，除非使用者明確要求或 OAS 只提供 CSV
+- 非程式題：走解說流（繁體中文），正文無 [1][2] 編號；參考資料統一列文末
 """
 
 from __future__ import annotations
@@ -39,6 +38,7 @@ EMBED_MODEL    = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
 
 OLLAMA_URL     = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+# 預設 600 秒，配合你家中較慢的環境
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "600"))
 
 LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8001/completion")
@@ -52,28 +52,34 @@ BASE_URL       = "https://eco.odb.ntu.edu.tw"
 qdrant   = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
 
-# 全域保存上一題通過驗證的 plan（用於 follow-up 承接）
+# 會話態
 LAST_PLAN: Optional[Dict[str,Any]] = None
+OAS_CACHE: Optional[Dict[str,Any]] = None   # 快取 OAS 白名單（本程式生命週期）
 
 # --------------------
-# Intent heuristics（極輕量，主要仍交給 LLM 判斷）
+# Intent hints（僅作最後備援；平時交給 LLM）
 # --------------------
-CODE_HINTS  = ["python","程式","code","範例","example","sample code","示範","下載","抓資料","畫圖","plot","時序","時間序列","繪圖"]
-NO_CODE_NEG = ["不要程式","不要用程式","除了程式","非程式","不用 code","不要 code","不是程式","不用寫程式"]
-
 CSV_HINT_RE = re.compile(r"\bcsv\b|下載|匯出|存檔", re.I)
 YEAR_RE     = re.compile(r"\b(19|20)\d{2}\b")
 
-def likely_code_intent(q: str) -> bool:
-    ql = q.lower()
-    return any(k in ql for k in CODE_HINTS)
+# --- Minimal variable hints（不是大詞庫，只是 4 個穩健 cue）---
+VAR_SYNONYMS = [
+    ("sst_anomaly", r"距平|異常|anomal(y|ies)"),
+    ("level",       r"\blevel\b|等級|分級"),
+    ("td",          r"熱位移|thermal\s*displacement"),
+    ("sst",         r"\bsst\b|海溫|海表溫"),
+]
 
-def negative_code_intent(q: str) -> bool:
-    ql = q.lower()
-    return any(k in ql for k in [t.lower() for t in NO_CODE_NEG])
+def extract_user_requested_vars(question: str, allowed: List[str]) -> List[str]:
+    out = []
+    q = question.lower()
+    for var, rx in VAR_SYNONYMS:
+        if re.search(rx, q, re.I) and (not allowed or var in allowed):
+            out.append(var)
+    return sorted(set(out))
 
 # --------------------
-# Basic helpers
+# Helpers
 # --------------------
 def get_payload_text(payload: Dict[str, Any]) -> str:
     txt = payload.get("text")
@@ -109,6 +115,7 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     hits = [{"text": get_payload_text(getattr(p, "payload", {}) or {}),
              "payload": getattr(p, "payload", {}) or {}} for p in points]
 
+    # 加一輪 code/api 偏好檢索（非過濾，只是補充樣本）
     code_filter = models.Filter(should=[
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_snippet")),
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_example")),
@@ -139,35 +146,29 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
         seen.add(key)
         out.append(h)
 
-    # 簡單 rerank（偏好 api/code，但不剔除其他）
+    # 題意相關的 rerank boost
     ql = question.lower()
     def boost(p: Dict[str,Any]) -> float:
         score = 0.0
         dt = (p.get("doc_type") or "").lower()
         title = (p.get("title") or "").lower()
 
-        # 正向：API/Code 類
         if dt in ("api_spec","code_snippet","code_example"):
             score += 1.5
-
-        # CLI 手冊只有在題目提到 CLI/命令列/工具時才加分，否則略微降權
         if dt == "cli_tool_guide":
             if re.search(r"\bcli\b|命令列|指令|工具", ql):
                 score += 0.6
             else:
                 score -= 0.4
-
-        # 與 ENSO 關聯：只有問題未涉及 ENSO/Niño/La Niña 才施加負分
         if ("enso" in title) and not re.search(r"enso|niño|la\s*niña", ql):
             score -= 0.8
-
         return score
 
     scored = [(boost(h["payload"]), h) for h in out]
     scored.sort(key=lambda x: x[0], reverse=True)
     reranked = [h for _,h in scored]
 
-    # 多樣化
+    # 多樣化（輕度）
     uniq, seen2 = [], set()
     for h in reranked:
         p = h["payload"]; k = (p.get("doc_type"), p.get("title"))
@@ -183,7 +184,7 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     return uniq
 
 # --------------------
-# OAS parsing / harvest
+# OAS parsing / harvest（含快取）
 # --------------------
 def _json_pointer(obj: Any, pointer: str) -> Any:
     if not pointer.startswith("#/"): return None
@@ -213,7 +214,8 @@ def _parse_oas_text(raw: str) -> Dict[str, Any]:
             y = None
         if isinstance(y, dict):
             # paths
-            for p in (y.get("paths") or {}): paths_list.append(p)
+            for p in (y.get("paths") or {}):
+                paths_list.append(p)
             # components.parameters
             comp_params = (y.get("components") or {}).get("parameters") or {}
             for key, pobj in comp_params.items():
@@ -261,7 +263,7 @@ def _parse_oas_text(raw: str) -> Dict[str, Any]:
                                     for g in m.groups():
                                         if g: append_set.add(g)
 
-    # regex fallback（盡力而為）
+    # regex fallback
     for p in re.findall(r'(?m)^\s*(/api/[^\s:]+)\s*:', raw): paths_list.append(p.strip())
     for p in re.findall(r'(?m)^\s*-\s*name\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$', raw): params_set.add(p.strip())
     m = _ALLOWED_DESC_RE.search(raw)
@@ -269,7 +271,6 @@ def _parse_oas_text(raw: str) -> Dict[str, Any]:
         for g in m.groups():
             if g: append_set.add(g)
 
-    # cast to lists
     enums_dict = {k: sorted(list(v)) for k, v in enums_map.items()}
     return {
         "params": sorted(params_set),
@@ -305,24 +306,28 @@ def _collect_api_specs_full_scan(limit: int = 1000) -> List[str]:
     return texts
 
 def harvest_oas_whitelist(hits: List[Dict[str,Any]], debug: bool=False) -> Optional[Dict[str,Any]]:
+    global OAS_CACHE
+    if OAS_CACHE is not None:
+        if debug:
+            print(f"[DEBUG] OAS cached: params={len(OAS_CACHE.get('params',[]))}, paths={len(OAS_CACHE.get('paths',[]))}")
+        return OAS_CACHE
+
     texts = _collect_api_specs_from_hits(hits)
     P,A,Paths = set(), set(), set()
     Enums: Dict[str,List[str]] = {}
+
     for raw in texts:
         meta = _parse_oas_text(raw)
-        P.update(meta["params"])
-        A.update(meta["append_allowed"])
-        Paths.update(meta["paths"])
+        P.update(meta["params"]); A.update(meta["append_allowed"]); Paths.update(meta["paths"])
         for k,v in (meta["param_enums"] or {}).items():
             Enums.setdefault(k, [])
             for x in v:
                 if x not in Enums[k]: Enums[k].append(x)
+
     if (len(P)<=1) or (not Paths):
         for raw in _collect_api_specs_full_scan(limit=1000):
             meta = _parse_oas_text(raw)
-            P.update(meta["params"])
-            A.update(meta["append_allowed"])
-            Paths.update(meta["paths"])
+            P.update(meta["params"]); A.update(meta["append_allowed"]); Paths.update(meta["paths"])
             for k,v in (meta["param_enums"] or {}).items():
                 Enums.setdefault(k, [])
                 for x in v:
@@ -335,8 +340,11 @@ def harvest_oas_whitelist(hits: List[Dict[str,Any]], debug: bool=False) -> Optio
         if Enums:
             print(f"[DEBUG] OAS enums: {json.dumps(Enums, ensure_ascii=False)}")
 
-    if not P and not Paths: return None
-    return {"params": sorted(P), "append_allowed": sorted(A), "paths": sorted(Paths), "param_enums": Enums}
+    if not P and not Paths: 
+        return None
+
+    OAS_CACHE = {"params": sorted(P), "append_allowed": sorted(A), "paths": sorted(Paths), "param_enums": Enums}
+    return OAS_CACHE
 
 # --------------------
 # LLM calls
@@ -352,38 +360,35 @@ def call_llamacpp_raw(prompt: str, timeout: float = LLAMA_TIMEOUT) -> str:
     return (data.get("content") or data.get("choices",[{}])[0].get("text","")).strip()
 
 # --------------------
-# Mode selection by LLM ("code" or "explain")
+# Mode classifier（只回 'code' 或 'explain'）
 # --------------------
 def llm_choose_mode(question: str, llm: str) -> str:
+    """
+    嚴格的單詞分類：'code' 或 'explain'
+    """
     sysrule = (
-        "You are an API planner for ODB MHW API. "
-        "Your goal is to select exactly ONE endpoint and a parameter dict that are BOTH strictly within the OAS whitelists provided. "
-        "Do NOT invent endpoints or parameters.\n\n"
-        "Spatial & temporal guidance:\n"
-        "- If the question mentions a region or place, estimate an appropriate spatial constraint using available geographic parameters from the whitelist "
-        "(e.g., any params whose names relate to lon/lat/bbox/coordinates), but use ONLY parameter names present in the whitelist. "
-        "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point.\n"
-        "- If the question implies a specific year or range, set start/end accordingly (YYYY-MM-DD). If the user mentions a single year, you may set it to that year's full range.\n\n"
-        "Output format guidance:\n"
-        "- Prefer a JSON endpoint for programmatic analysis by default. Only choose a CSV endpoint if the user explicitly requests CSV/download OR if OAS provides only a CSV path. "
-        "- If the user asks for CSV and no CSV endpoint exists, check whether a 'format' parameter (enum) allows 'csv'. If yes, set format='csv'. Otherwise fall back to JSON.\n\n"
-        "append guidance:\n"
-        "- If the user explicitly requested certain data variables (provided below as 'user_append_hints'), include ALL of them in 'append' (comma-separated) IF and ONLY IF 'append' exists in the whitelist and each value is allowed by the OAS.\n\n"
-        "If a previous plan is provided, inherit its parameter values unless the user explicitly asked to change them; only modify what is required by the new question."
+        "You are a classifier. Read the question and output exactly one token: 'code' or 'explain'.\n"
+        "- Output 'explain' when the user asks to explain/define/list/compare/describes something, or explicitly says not to use code.\n"
+        "- Output 'code' only when the user asks for code, script, programmatic steps, API calls, downloads, or plotting.\n"
+        "Do NOT include any other text or reasoning. Output exactly one token."
     )
-    prompt = f"{sysrule}\n\nQuestion:\n{question}\n\nAnswer with only one token: code or explain"
+    prompt = f"{sysrule}\n\nQuestion:\n{question}\n\nYour answer (one token):"
     try:
         raw = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
-        ans = raw.strip().lower()
-        if "explain" in ans: return "explain"
-        if "code" in ans: return "code"
-        # fallback
-        return "code" if likely_code_intent(question) else "explain"
+        ans = (raw or "").strip().lower()
+        if ans not in ("code","explain"):
+            ans = "explain"
+        return ans
     except Exception:
-        return "code" if likely_code_intent(question) else "explain"
+        # 備援（盡量偏向 explain）
+        ql = question.lower()
+        has_code_words = any(k in ql for k in ["python","code","程式","範例","sample","plot","畫圖","下載","api 呼叫","呼叫 api","requests"])
+        has_no_code_neg = any(k in ql for k in ["不要程式","不用程式","除了程式","不用 code","不要 code","不是程式","不用寫程式","如果不用程式"])
+        if has_no_code_neg: return "explain"
+        return "code" if has_code_words else "explain"
 
 # --------------------
-# Planning (LLM) → validated plan
+# Planning（你的最新版 sysrule 精簡整合）
 # --------------------
 def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
                   prev_plan: Optional[Dict[str,Any]]=None,
@@ -397,28 +402,30 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
     param_enums     = oas.get("param_enums", {}) or {}
 
     sysrule = (
-        "You are an API planner for ODB APIs (e.g., MHW API) which complies with OpenAPI Specifications(OAS). "
+        "You are an API planner for ODB APIs (e.g., MHW API) which complies with OpenAPI Specifications (OAS). "
         "Your goal is to select exactly ONE endpoint and a parameter dict that are BOTH strictly within the OAS whitelists provided. "
         "Do NOT invent endpoints or parameters.\n\n"
         "Spatial-related params guidance:\n"
-        "- If the question mentions a region or place, estimate an appropriate spatial range or constraint for that region/place by using available geographic parameters from the whitelist (e.g., any params whose names relate to lon/lat, or bbox: lon0,lat0,lon1,lat1 which specify longitude/latitude range), but use ONLY parameter names present in the whitelist.\n"
-        "Temporal-related params guidance:\n"       
-        "- If the question implies a specific year or range, set temporal-related params (e.g., start/end, or any params whose name relate to date or datetime but use ONLY parameters names present in the whitelist) accordingly (YYYY-MM-DD). You may deduce a 12-month range when the user mentions a single year.\n\n"
+        "- If the question mentions a region or place, estimate an appropriate spatial range or constraint for that region/place by using available geographic parameters from the whitelist "
+        "(e.g., any params whose names relate to lon/lat, or bbox: lon0,lat0,lon1,lat1 which specify longitude/latitude range), but use ONLY parameter names present in the whitelist. "
+        "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point.\n"
+        "Temporal-related params guidance:\n"
+        "- If the question implies a specific year or range, set temporal-related params (e.g., start/end, or any params whose name relate to date or datetime but use ONLY parameter names present in the whitelist) accordingly (YYYY-MM-DD). "
+        "You may deduce a 12-month range when the user mentions a single year.\n\n"
         "Endpoint or format-related query params for CSV request guidance:\n"
-        "- First prefer an endpoint that output JSON response if the user does not explicitly asks for CSV or file download."
+        "- Prefer an endpoint that outputs JSON if the user does not explicitly ask for CSV or file download. "
         "- If the user explicitly asks for CSV or file download, then return an endpoint path that clearly indicates CSV (e.g., contains '/csv') if such an endpoint exists in the whitelist.\n"
         "- Otherwise, if a 'format' parameter exists in the whitelist and its enum includes 'csv', set format='csv'.\n"
-        "- Otherwise, return an endpoint that output JSON response.\n\n"
+        "- Otherwise, return an endpoint that outputs JSON.\n\n"
         "The query parameter: append usage guidance:\n"
         "- If the user explicitly requested certain data variables (provided below as 'user_append_hints'), include ALL of them in 'append' (comma-separated) IF and ONLY IF 'append' exists in the whitelist and each value is allowed by the OAS.\n\n"
         "If a previous plan is provided, inherit its parameter values unless the user explicitly asked to change them; only modify what is required by the new question."
     )
 
     prev_line = f"Previous plan:\n{json.dumps(prev_plan, ensure_ascii=False)}" if prev_plan else "Previous plan: (none)"
-    csv_line  = f"User {'' if bool(csv_requested) else 'NOT'} requested CSV in endpoint or query params. "
+    csv_line  = f"User {'requested' if bool(csv_requested) else 'NOT requested'} CSV in endpoint or query params."
     years_line= f"Years hint: {json.dumps(years_hint)}"
     vars_line = f"user_append_hints: {json.dumps(user_append_hints or [], ensure_ascii=False)}"
-    if debug: print(f"[DEBUG] rule for plan, allowed_paths: {allowed_paths}, and prev: {prev_line} , and csv: {csv_line} , and years: {years_line} , and vars: {vars_line}")
 
     oas_blob  = {
         "paths": allowed_paths,
@@ -444,7 +451,7 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
 
     try:
         raw = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
-        raw = re.sub(r"^```json\s*|\s*```$", "", raw.strip(), flags=re.I)
+        raw = re.sub(r"^```json\s*|\s*```$", "", (raw or "").strip(), flags=re.I)
         plan = json.loads(raw)
         if debug: print(f"[DEBUG] Plan(raw): {raw}")
         return plan
@@ -452,6 +459,9 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
         if debug: print(f"[DEBUG] Plan LLM failed: {e}")
         return None
 
+# --------------------
+# Plan validation & refine
+# --------------------
 def _split_csv(val: str) -> List[str]:
     return [x.strip() for x in str(val).split(",") if x.strip()]
 
@@ -468,7 +478,7 @@ def validate_plan(plan: Dict[str,Any], oas: Dict[str,Any]) -> Tuple[bool, str]:
         if k not in allowed_params:
             return False, f"param '{k}' not allowed"
 
-    # enum 檢查（例如 format=csv）
+    # enum 檢查（如 format）
     enums = oas.get("param_enums", {}) or {}
     for k,v in params.items():
         if k in enums and enums[k]:
@@ -489,6 +499,93 @@ def validate_plan(plan: Dict[str,Any], oas: Dict[str,Any]) -> Tuple[bool, str]:
             params[key] = str(params[key]) + "-01"
     return True, ""
 
+def llm_refine_plan(question: str,
+                    oas: Dict[str,Any],
+                    plan: Dict[str,Any],
+                    prev_plan: Optional[Dict[str,Any]],
+                    llm: str,
+                    debug: bool=False) -> Dict[str,Any]:
+    """
+    只在需要時呼叫：為當前 plan 做「最小增補」（不可改 endpoint）
+    """
+    allowed_paths  = oas.get("paths", [])
+    allowed_params = oas.get("params", [])
+    allowed_append = oas.get("append_allowed", [])
+    param_enums    = oas.get("param_enums", {}) or {}
+
+    sysrule = (
+        "You are validating an API plan. Do NOT change the endpoint. "
+        "Only propose minimal additions to the params dict if the current plan is missing obviously-required or strongly-implied fields.\n"
+        "Rules:\n"
+        "- Use ONLY parameters present in the whitelist.\n"
+        "- If the question mentions a year but 'end' is missing and allowed, add the year's end date.\n"
+        "- If the question mentions a region/place and geographic params are allowed but missing, add a reasonable bounding box (two distinct values per axis) instead of a single point.\n"
+        "- If the user explicitly asked for certain variables and 'append' is allowed, ensure all are included (comma-separated) but only from the allowed values.\n"
+        "- If a previous plan exists, inherit spatial/temporal params from it when appropriate (e.g., follow-up that says '改成下載 CSV').\n\n"
+        "Return ONLY a JSON object with one of the following shapes:\n"
+        '{\"action\":\"ok\"}\n'
+        'or\n'
+        '{\"action\":\"patch\",\"add\":{\"param1\":\"value\", ...}}\n'
+        "No other text."
+    )
+
+    blob = {
+        "whitelist": {
+            "paths": allowed_paths,
+            "params": allowed_params,
+            "append_allowed": allowed_append,
+            "param_enums": param_enums
+        },
+        "question": question,
+        "current_plan": plan,
+        "previous_plan": prev_plan or {},
+    }
+
+    prompt = f"{sysrule}\n\n{json.dumps(blob, ensure_ascii=False)}\n"
+    try:
+        raw = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
+        raw = (raw or "").strip()
+        data = json.loads(re.sub(r"^```json\s*|\s*```$", "", raw, flags=re.I))
+        if debug: print(f"[DEBUG] Refine(raw): {data}")
+
+        if not isinstance(data, dict): return plan
+        if data.get("action") == "patch" and isinstance(data.get("add"), dict):
+            patched = dict(plan)
+            params  = dict(patched.get("params", {}))
+            enums   = oas.get("param_enums", {}) or {}
+            for k,v in data["add"].items():
+                if k in allowed_params:
+                    if k in enums and enums[k]:
+                        if str(v) not in set(enums[k]):
+                            continue
+                    params[k] = v
+            patched["params"] = params
+            return patched
+        return plan
+    except Exception as e:
+        if debug: print(f"[DEBUG] Refine failed: {e}")
+        return plan
+
+def _needs_refine(plan: Dict[str,Any], req_vars: List[str], years_hint: Optional[Tuple[str,str]]) -> bool:
+    """是否值得呼叫 refine（減少第 3 次 LLM）"""
+    params = plan.get("params", {})
+    # 使用者點名了變數，但 append 沒包含完整
+    if req_vars:
+        cur = set(_split_csv(params.get("append",""))) if "append" in params else set()
+        if not set(req_vars).issubset(cur):
+            return True
+    # 只有 start 沒 end，且有年份提示
+    if years_hint and ("start" in params and "end" not in params):
+        return True
+    # bbox 退化為單點（lat0==lat1 且 lon0==lon1）
+    if all(k in params for k in ("lat0","lat1","lon0","lon1")):
+        try:
+            if float(params["lat0"]) == float(params["lat1"]) and float(params["lon0"]) == float(params["lon1"]):
+                return True
+        except Exception:
+            pass
+    return False
+
 # --------------------
 # Code generation & guard
 # --------------------
@@ -502,10 +599,10 @@ def code_from_plan_via_llm(question: str, plan: Dict[str,Any], llm: str) -> str:
         "Call it with: requests.get(f\"{BASE_URL}{endpoint}\", params=params) within try-except block. "
         "Do NOT manually concatenate query strings; do NOT add headers, API keys, or extra parameters. "
         "If and only if the provided endpoint ends with '/csv' or params include format='csv', read the response as CSV via pandas.read_csv(io.StringIO(r.text)) with an 'import io'. "
-        "Otherwise, the response should be in JSON, and use try-except to parse JSON response into a pandas DataFrame to manipulate the fetched data. "
+        "Otherwise parse JSON into a pandas DataFrame to manipulate the fetched data. "
         "All comments (if any) must be in Traditional Chinese or English."
-        "Keep the code minimal and runable. If plotting or analyzing data is required in the question, provide an appropriate plot code for the fetched data"
-    )
+        "Keep the code minimal and runable. If plotting or analyzing data is required in the question, provide an appropriate plot code for the fetched data. You should make sure the response format in OAS to use the available fields for correctly plotting. You should try to understand the programming requirements in the question and use your programming expertise to provide the correct code."
+    ) 
 
     prompt = f"""{sysrule}
 
@@ -517,7 +614,7 @@ Endpoint: {endpoint}
 Params JSON (use exactly as-is):
 {params_json}
 
-Wrap the script in a single ```python code fence. Keep it short.
+Wrap the script in a single ```python code fence.
 """
     try:
         return (call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)).strip()
@@ -525,7 +622,6 @@ Wrap the script in a single ```python code fence. Keep it short.
         return f"[LLM error during code generation] {e}"
 
 def static_guard_check(code: str, oas: Dict[str,Any]) -> Tuple[bool, str]:
-    # endpoint 白名單
     endpoints = set(oas.get("paths", []))
     used_paths = set(re.findall(r'["\'](/api/[^"\']+)["\']', code))
     for p in used_paths:
@@ -536,15 +632,19 @@ def static_guard_check(code: str, oas: Dict[str,Any]) -> Tuple[bool, str]:
     if re.search(r'\?.*=', code) and "params=" not in code:
         return False, "code manually concatenates query string"
 
-    # 必須使用 params= 呼叫
+    # 必須使用 params=
     if "requests.get(" in code and "params=" not in code:
         return False, "requests.get is used without params= dict"
 
-    # CSV 端點不得 read_json
-    if any(p.endswith("/csv") for p in used_paths) and re.search(r'\bread_json\b', code):
-        return False, "CSV endpoint must not use read_json"
+    # CSV 檢查：/csv 或 format='csv' → 需 io.StringIO
+    is_csv_mode = any(p.endswith("/csv") for p in used_paths) or re.search(r"params\s*=\s*\{[\s\S]*?['\"]format['\"]\s*:\s*['\"]csv['\"]", code)
+    if is_csv_mode:
+        if "pd.read_csv(" in code and "io.StringIO(" not in code:
+            return False, "CSV must be read via pandas.read_csv(io.StringIO(r.text))"
+        if "import io" not in code:
+            return False, "CSV mode requires 'import io' for io.StringIO"
 
-    # 檢查 params 鍵與 append 多值合法性
+    # 參數鍵/append 值合法性
     m = re.search(r"params\s*=\s*\{([\s\S]*?)\}\s*", code)
     if m:
         body = m.group(1)
@@ -560,28 +660,20 @@ def static_guard_check(code: str, oas: Dict[str,Any]) -> Tuple[bool, str]:
             if allowed_append and any(v not in allowed_append for v in vals):
                 return False, f"append value(s) not allowed: {am.group(1)}"
 
-    # 不得提 API key/token
+    # 不得提及 API key/token
     if re.search(r'api[_-]?key|token|authorization|bearer', code, re.I):
         return False, "code mentions API key/token"
-    
-    # 若 endpoint 是 /csv 或 params format='csv'，必須以 io.StringIO(r.text) 給 pandas.read_csv
-    is_csv_mode = any(p.endswith("/csv") for p in used_paths) or re.search(r"params\.get\(\s*['\"]format['\"]\s*\)\s*==\s*['\"]csv['\"]", code)
-    if is_csv_mode:
-        if "pd.read_csv(" in code and "io.StringIO(" not in code:
-            return False, "CSV must be read via pandas.read_csv(io.StringIO(r.text)); do not pass raw bytes/strings as file path"
-        if "import io" not in code:
-            return False, "CSV mode requires 'import io' for io.StringIO"    
 
     return True, ""
 
 # --------------------
-# Build non-code prompt
+# Non-code prompt
 # --------------------
 def build_prompt(question: str, ctx: List[Dict[str, Any]], oas_info: Optional[Dict[str,Any]]) -> str:
     sys_rule = (
         "你是 ODB（海洋學門資料庫）助理。請只根據『依據』內容作答，允許語意近似（例如「海洋系統≈海洋生態系統」），"
         "但科學內容需審慎、可驗證。嚴禁自創或改造學術名詞；若不確定，請改用標準術語（如「聖嬰（El Niño）」「反聖嬰（La Niña）」「ENSO」）。"
-        "若提及 ODB API 的端點或參數，必須嚴格遵守 OpenAPI specification (OAS) 白名單（端點/方法/參數不可虛構）。"
+        "若提及 ODB API 的端點或參數，必須嚴格遵守 OAS 白名單（端點/方法/參數不可虛構）。"
         "正文不要使用 [1][2] 或「來源1」等編號；參考資料請我在文末整理。"
         "回答使用繁體中文（不要使用簡體字詞）；英文術語可保留。"
     )
@@ -598,9 +690,18 @@ def build_prompt(question: str, ctx: List[Dict[str, Any]], oas_info: Optional[Di
     return f"{sys_rule}\n\n問題：{question}\n\n依據：\n{ctx_text}"
 
 def format_citations(hits: List[Dict[str,Any]], question: str) -> str:
-    # 不在正文放編號，這裡列出最相關的 5 則來源
+    # 優先序：api_spec > code_snippet/code_example > web_article > cli_tool_guide > other
+    def pri(p: Dict[str,Any]) -> int:
+        dt = (p.get("doc_type") or "").lower()
+        if dt == "api_spec": return 0
+        if dt in ("code_snippet","code_example"): return 1
+        if dt == "web_article": return 2
+        if dt == "cli_tool_guide": return 3
+        return 4
+
+    ranked = sorted(hits, key=lambda h: pri(h.get("payload", {}) or {}))
     items=[]; seen=set()
-    for h in hits:
+    for h in ranked:
         p=h.get("payload",{}) or {}
         t,u = get_title_url(p); k=(t,u)
         if k in seen: continue
@@ -608,22 +709,6 @@ def format_citations(hits: List[Dict[str,Any]], question: str) -> str:
         items.append(f"- {t} — {u}" if u else f"- {t}")
         if len(items)>=5: break
     return "\n".join(items) if items else "（無）"
-
-# --- Minimal variable hints (not a big lexicon; just 4 robust cues) ---
-VAR_SYNONYMS = [
-    ("sst_anomaly", r"距平|異常|anomal(y|ies)"),
-    ("level",       r"\blevel\b|等級|分級|級數"),
-    ("td",          r"\btd\b|熱位移|thermal\s*displacement"),
-    ("sst",         r"\bsst\b|海溫|海表溫|海水表面溫度|sea\s*surface\s*temperature"),
-]
-
-def extract_user_requested_vars(question: str, allowed: List[str]) -> List[str]:
-    out = []
-    q = question.lower()
-    for var, rx in VAR_SYNONYMS:
-        if re.search(rx, q, re.I) and (not allowed or var in allowed):
-            out.append(var)
-    return sorted(set(out))
 
 # --------------------
 # Core
@@ -641,18 +726,14 @@ def answer_once(
 ) -> str:
     global LAST_PLAN
 
-    # 先由 LLM 判斷模式；若使用者明說不要程式，直接走 explain
+    # 1) 分類（只回 code/explain）
     mode = llm_choose_mode(question, llm=llm)
-    if negative_code_intent(question):
-        mode = "explain"
 
-    # 檢索
+    # 2) 檢索 & OAS
     hits = query_qdrant(question, topk=max(6, topk), debug=debug)
-
-    # OAS
     oas_info = harvest_oas_whitelist(hits, debug=debug)
 
-    # 非程式題 → 直接總結（禁止虛構 API）
+    # 3) 非程式題：直接解說
     if mode == "explain":
         prompt = build_prompt(question, hits, oas_info)
         if ctx_only: return prompt
@@ -660,7 +741,7 @@ def answer_once(
         cites = format_citations(hits, question)
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
-    # 程式題：沒有 OAS 也不強產 code（避免亂寫）
+    # 4) 程式題：沒有 OAS 也不硬產 code → 解說
     if not oas_info:
         prompt = build_prompt(question, hits, None)
         if ctx_only: return prompt
@@ -676,8 +757,8 @@ def answer_once(
         y = years[0]
         years_hint = (f"{y}-01-01", f"{y}-12-31")
 
-    # 由 LLM 產生計畫（可承接上一題 plan；append 由 LLM 決定且需包含使用者明說的變數）
-    prev_plan = LAST_PLAN  # 若無 follow-up 要求，LLM 仍可視為參考
+    # 5) 規劃
+    prev_plan = LAST_PLAN
     plan = llm_json_plan(
         question=question,
         oas=oas_info,
@@ -686,52 +767,58 @@ def answer_once(
         debug=debug,
         csv_requested=csv_requested,
         years_hint=years_hint,
-        user_append_hints=None  # 交給 LLM 從問題語意判斷，不再硬寫字典
+        user_append_hints=None
     )
-
     if not plan:
-        # 讓 LLM 失敗時，退回解說模式，避免輸出錯 code
         prompt = build_prompt(question, hits, oas_info)
         out = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
         cites = format_citations(hits, question)
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
-    # -- 把使用者點名的變數全部納入 append（仍受 OAS 白名單約束） --
+    # 把使用者明確點名的變數寫回 append（白名單約束）
     req_vars = extract_user_requested_vars(question, oas_info.get("append_allowed", []))
     if req_vars:
         pp = plan.setdefault("params", {})
         cur = set()
         if "append" in pp and pp["append"]:
             cur = set([x.strip() for x in str(pp["append"]).split(",") if x.strip()])
-        for v in req_vars:
-            cur.add(v)
+        for v in req_vars: cur.add(v)
         if cur:
             pp["append"] = ",".join(sorted(cur))
 
+    # 第一次驗證
     ok, msg = validate_plan(plan, oas_info)
-    if not ok and debug:
-        print(f"[DEBUG] Plan invalid: {msg}")
+    if debug and not ok:
+        print(f"[DEBUG] Plan invalid@first: {msg}")
+
+    # 6) 只有在需要時才呼叫 refine（減少第 3 次 LLM）
+    if (not ok) or _needs_refine(plan, req_vars, years_hint):
+        plan = llm_refine_plan(question, oas_info, plan, prev_plan, llm, debug=debug)
+
+    # 第二次驗證
+    ok, msg = validate_plan(plan, oas_info)
+    if debug and not ok:
+        print(f"[DEBUG] Plan invalid@refined: {msg}")
     if not ok:
-        # 再退回解說模式
         prompt = build_prompt(question, hits, oas_info)
         out = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
         cites = format_citations(hits, question)
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
-    # 計畫通過 → 保存供下一題承接
+    # 保存 plan（供追問承接：如「改成下載 CSV」）
     LAST_PLAN = {"endpoint": plan["endpoint"], "params": dict(plan["params"])}
 
-    # 交給 LLM 產 code + 守門
+    # 7) 產 code + 守門
     code = code_from_plan_via_llm(question, plan, llm=llm)
     ok2, msg2 = static_guard_check(code, oas_info)
     if not ok2 and debug:
         print(f"[DEBUG] Code violates guard: {msg2}")
-
     if not ok2:
-        # 以最小模板回覆（仍完全遵守 plan）
+        # 最小模板（仍完全遵守 plan）
         endpoint = plan["endpoint"]; params = plan["params"]
         code = (
             "```python\n"
+            "# 最小可執行範例：依需求自行調整參數\n"
             "import requests\n"
             "import pandas as pd\n"
             "import matplotlib.pyplot as plt\n"
@@ -808,3 +895,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

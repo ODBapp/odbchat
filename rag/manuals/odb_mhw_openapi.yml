@@ -66,7 +66,12 @@ content: |
       * 由於ODB MHW API使用HTTP GET method，因此很方便直接在瀏覽器中輸入server URL加上query parameters即可調用資料，
         比如以剛才輸出 SST 與海洋熱浪等級為例，瀏覽器中輸入
         https://eco.odb.ntu.edu.tw/api/mhw?lon0=135&lon1=150&lat0=15&lat1=30&start=2024-12-01&end=2025-06-01&append=sst,level
-        即可得到所需資料，非常方便。           
+        即可得到所需資料，非常方便。
+      * 'start' 參數的最小值（MHW資料最早的時間）為1982-01-01。
+    請注意ODB MHW API輸出的時間參數是'date', 若需要對時間畫圖，x-axis須選擇'date'.
+      * ODB MHW API output response format contains 'lon', 'lat', 'date' 
+        (for spatial coordinates and temporal information), 
+        and other data variable fields which determined by `append` parameter.          
   '''
 
 ---
