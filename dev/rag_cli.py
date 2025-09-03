@@ -1,20 +1,27 @@
-#!/usr/bin/env python
+#!/usr/#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """
-rag_cli.py — ODBchat RAG CLI (rev: unified fast path)
-- 以 LLM 做「分類(code/explain)」→「OAS 內規劃」→（必要時）「最小補齊」
-- 預設只需 2 次 LLM 呼叫（分類 + 規劃/或解說）；只有規劃驗證失敗或明顯缺值才呼叫第 3 次補齊
+rag_cli.py — ODBchat RAG CLI (rev: 2025-09-03)
+- 分類(code/explain) → OAS 規劃 →（必要時）最小補齊
 - 嚴格遵守 OAS 白名單（端點/參數/enum/append）
-- 程式碼生成使用 requests.get(..., params=...)；禁止手刻 query string
-- CSV 預設不使用，除非使用者明確要求或 OAS 只提供 CSV
-- 非程式題：走解說流（繁體中文），正文無 [1][2] 編號；參考資料統一列文末
+- 程式碼生成保證：
+  * JSON 一律 r.json() → DataFrame；嚴禁 pd.read_json / io.StringIO（除非 CSV）
+  * CSV 僅在 /csv 或 format='csv' 下用 pandas.read_csv(io.StringIO(r.text))
+  * 若有 'date' 欄位，轉 datetime；時序圖 x 軸優先用 'date'
+  * 地圖請用 pcolormesh（禁止用 scatter 畫分佈地圖）
+  * 嚴禁手刻 query string；必用 params=dict
+- 追問承接：繼承上一輪的空間/時間/append、CSV 偏好（不自創）
+- MHW 特例：OAS 時間跨度限制（<=10° → 10年；>10° → 1年；>90° → 1個月）→ 要求分段抓取 + concat
+- 程式「沒寫完」：提供續寫路徑（帶入上次完整 code，請 LLM 產生合併後的完整單檔）
+- 地圖任務守門失敗：提供安全地圖模板 fallback（pcolormesh + pivot）
 """
 
 from __future__ import annotations
 
 import os, re, sys, json, argparse, warnings
 from typing import Any, Dict, List, Tuple, Optional
+from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.cuda")
 
@@ -38,7 +45,6 @@ EMBED_MODEL    = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
 
 OLLAMA_URL     = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
-# 預設 600 秒，配合你家中較慢的環境
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "600"))
 
 LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8001/completion")
@@ -54,15 +60,19 @@ embedder = SentenceTransformer(EMBED_MODEL, device="cpu")
 
 # 會話態
 LAST_PLAN: Optional[Dict[str,Any]] = None
-OAS_CACHE: Optional[Dict[str,Any]] = None   # 快取 OAS 白名單（本程式生命週期）
+OAS_CACHE: Optional[Dict[str,Any]] = None
+LAST_CODE_TEXT: Optional[str] = None  # 用於「續寫/補完」情境
 
 # --------------------
-# Intent hints（僅作最後備援；平時交給 LLM）
+# Intent hints
 # --------------------
-CSV_HINT_RE = re.compile(r"\bcsv\b|下載|匯出|存檔", re.I)
-YEAR_RE     = re.compile(r"\b(19|20)\d{2}\b")
+CSV_HINT_RE    = re.compile(r"\bcsv\b|下載|匯出|存檔", re.I)
+YEAR_RE        = re.compile(r"\b(19|20)\d{2}\b")
+MONTH_RE       = re.compile(r"\b(19|20)\d{2}-(0[1-9]|1[0-2])\b")
+MAP_HINT_RE    = re.compile(r"地圖|分佈|分布|distribution\s*map|map", re.I)
+CONTINUE_HINT  = re.compile(r"繼續|續寫|接著|補完|沒寫完|沒有寫完|未完成|continue|carry on", re.I)
 
-# --- Minimal variable hints（不是大詞庫，只是 4 個穩健 cue）---
+# 變數輕量同義詞 cue（白名單約束下才納入）
 VAR_SYNONYMS = [
     ("sst_anomaly", r"距平|異常|anomal(y|ies)"),
     ("level",       r"\blevel\b|等級|分級"),
@@ -77,6 +87,10 @@ def extract_user_requested_vars(question: str, allowed: List[str]) -> List[str]:
         if re.search(rx, q, re.I) and (not allowed or var in allowed):
             out.append(var)
     return sorted(set(out))
+
+def month_hint_from_question(question: str) -> Optional[str]:
+    m = MONTH_RE.search(question)
+    return m.group(0) if m else None
 
 # --------------------
 # Helpers
@@ -115,7 +129,7 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     hits = [{"text": get_payload_text(getattr(p, "payload", {}) or {}),
              "payload": getattr(p, "payload", {}) or {}} for p in points]
 
-    # 加一輪 code/api 偏好檢索（非過濾，只是補充樣本）
+    # 再補 code/api 偏好（增加候選多樣性）
     code_filter = models.Filter(should=[
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_snippet")),
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_example")),
@@ -146,29 +160,28 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
         seen.add(key)
         out.append(h)
 
-    # 題意相關的 rerank boost
+    # 題意加權與過濾
     ql = question.lower()
     def boost(p: Dict[str,Any]) -> float:
         score = 0.0
         dt = (p.get("doc_type") or "").lower()
         title = (p.get("title") or "").lower()
-
-        if dt in ("api_spec","code_snippet","code_example"):
-            score += 1.5
+        if dt in ("api_spec","code_snippet","code_example"): score += 1.5
         if dt == "cli_tool_guide":
             if re.search(r"\bcli\b|命令列|指令|工具", ql):
                 score += 0.6
             else:
-                score -= 0.4
+                score -= 0.6
         if ("enso" in title) and not re.search(r"enso|niño|la\s*niña", ql):
             score -= 0.8
         return score
 
     scored = [(boost(h["payload"]), h) for h in out]
+    scored = [x for x in scored if x[0] >= -0.5]  # 丟掉負分太多的
     scored.sort(key=lambda x: x[0], reverse=True)
     reranked = [h for _,h in scored]
 
-    # 多樣化（輕度）
+    # 輕度多樣化
     uniq, seen2 = [], set()
     for h in reranked:
         p = h["payload"]; k = (p.get("doc_type"), p.get("title"))
@@ -360,16 +373,13 @@ def call_llamacpp_raw(prompt: str, timeout: float = LLAMA_TIMEOUT) -> str:
     return (data.get("content") or data.get("choices",[{}])[0].get("text","")).strip()
 
 # --------------------
-# Mode classifier（只回 'code' 或 'explain'）
+# Mode classifier
 # --------------------
 def llm_choose_mode(question: str, llm: str) -> str:
-    """
-    嚴格的單詞分類：'code' 或 'explain'
-    """
     sysrule = (
         "You are a classifier. Read the question and output exactly one token: 'code' or 'explain'.\n"
         "- Output 'explain' when the user asks to explain/define/list/compare/describes something, or explicitly says not to use code.\n"
-        "- Output 'code' only when the user asks for code, script, programmatic steps, API calls, downloads, or plotting.\n"
+        "- Output 'code' only when the user asks for code, script, programmatic steps, API calls, downloads, plotting, or when they ask to continue/complete previous code.\n"
         "Do NOT include any other text or reasoning. Output exactly one token."
     )
     prompt = f"{sysrule}\n\nQuestion:\n{question}\n\nYour answer (one token):"
@@ -380,15 +390,15 @@ def llm_choose_mode(question: str, llm: str) -> str:
             ans = "explain"
         return ans
     except Exception:
-        # 備援（盡量偏向 explain）
         ql = question.lower()
+        has_continue = bool(CONTINUE_HINT.search(ql))
         has_code_words = any(k in ql for k in ["python","code","程式","範例","sample","plot","畫圖","下載","api 呼叫","呼叫 api","requests"])
-        has_no_code_neg = any(k in ql for k in ["不要程式","不用程式","除了程式","不用 code","不要 code","不是程式","不用寫程式","如果不用程式"])
+        has_no_code_neg = any(k in ql for k in ["不要程式","不用程式","除了程式","不用 code","不要 code","不是程式","不用寫程式","如果不用程式","除了程式以外"])
         if has_no_code_neg: return "explain"
-        return "code" if has_code_words else "explain"
+        return "code" if (has_continue or has_code_words) else "explain"
 
 # --------------------
-# Planning（你的最新版 sysrule 精簡整合）
+# Planning
 # --------------------
 def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
                   prev_plan: Optional[Dict[str,Any]]=None,
@@ -407,10 +417,10 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
         "Do NOT invent endpoints or parameters.\n\n"
         "Spatial-related params guidance:\n"
         "- If the question mentions a region or place, estimate an appropriate spatial range or constraint for that region/place by using available geographic parameters from the whitelist "
-        "(e.g., any params whose names relate to lon/lat, or bbox: lon0,lat0,lon1,lat1 which specify longitude/latitude range), but use ONLY parameter names present in the whitelist. "
+        "(e.g., any params whose names relate to lon/lat, or bbox: lon0,lat0,lon1,lat1), but use ONLY parameter names present in the whitelist. "
         "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point.\n"
         "Temporal-related params guidance:\n"
-        "- If the question implies a specific year or range, set temporal-related params (e.g., start/end, or any params whose name relate to date or datetime but use ONLY parameter names present in the whitelist) accordingly (YYYY-MM-DD). "
+        "- If the question implies a specific year or range, set temporal-related params (e.g., start/end, or any params whose name relate to date/datetime but use ONLY parameter names present in the whitelist) accordingly (YYYY-MM-DD). "
         "You may deduce a 12-month range when the user mentions a single year.\n\n"
         "Endpoint or format-related query params for CSV request guidance:\n"
         "- Prefer an endpoint that outputs JSON if the user does not explicitly ask for CSV or file download. "
@@ -505,9 +515,6 @@ def llm_refine_plan(question: str,
                     prev_plan: Optional[Dict[str,Any]],
                     llm: str,
                     debug: bool=False) -> Dict[str,Any]:
-    """
-    只在需要時呼叫：為當前 plan 做「最小增補」（不可改 endpoint）
-    """
     allowed_paths  = oas.get("paths", [])
     allowed_params = oas.get("params", [])
     allowed_append = oas.get("append_allowed", [])
@@ -567,17 +574,13 @@ def llm_refine_plan(question: str,
         return plan
 
 def _needs_refine(plan: Dict[str,Any], req_vars: List[str], years_hint: Optional[Tuple[str,str]]) -> bool:
-    """是否值得呼叫 refine（減少第 3 次 LLM）"""
     params = plan.get("params", {})
-    # 使用者點名了變數，但 append 沒包含完整
     if req_vars:
         cur = set(_split_csv(params.get("append",""))) if "append" in params else set()
         if not set(req_vars).issubset(cur):
             return True
-    # 只有 start 沒 end，且有年份提示
     if years_hint and ("start" in params and "end" not in params):
         return True
-    # bbox 退化為單點（lat0==lat1 且 lon0==lon1）
     if all(k in params for k in ("lat0","lat1","lon0","lon1")):
         try:
             if float(params["lat0"]) == float(params["lat1"]) and float(params["lon0"]) == float(params["lon1"]):
@@ -586,6 +589,72 @@ def _needs_refine(plan: Dict[str,Any], req_vars: List[str], years_hint: Optional
             pass
     return False
 
+def inherit_from_prev_if_reasonable(plan: Dict[str,Any], prev_plan: Optional[Dict[str,Any]], oas: Dict[str,Any], csv_requested: bool, debug: bool=False) -> Dict[str,Any]:
+    if not prev_plan: return plan
+    allowed_params = set(oas.get("params", []))
+    patched = dict(plan)
+    p_now = dict(patched.get("params", {}))
+    p_prev= dict(prev_plan.get("params", {}))
+
+    # 繼承：缺什麼補什麼（不覆蓋現值）
+    for k,v in p_prev.items():
+        if k in allowed_params and k not in p_now:
+            p_now[k] = v
+
+    # CSV 追問：若使用者要 CSV
+    if csv_requested:
+        paths = oas.get("paths", [])
+        if patched.get("endpoint") in paths:
+            csv_paths = [p for p in paths if p.endswith("/csv")]
+            if csv_paths and not patched["endpoint"].endswith("/csv"):
+                base = patched["endpoint"].rsplit("/",1)[0]
+                cand = [p for p in csv_paths if p.startswith(base)]
+                patched["endpoint"] = (cand[0] if cand else csv_paths[0])
+            else:
+                enums = oas.get("param_enums", {}) or {}
+                if "format" in allowed_params and "format" in enums and ("csv" in set(enums["format"])):
+                    p_now["format"] = "csv"
+
+    patched["params"] = p_now
+    if debug and patched != plan:
+        print(f"[DEBUG] Inherit prev → {patched}")
+    return patched
+
+# --------------------
+# MHW 特例：時間跨度限制 → 代碼生成提示（不直接改 plan）
+# --------------------
+def mhw_span_hint(plan: Dict[str,Any]) -> Optional[Dict[str,Any]]:
+    ep = plan.get("endpoint","")
+    if "/api/mhw" not in ep: return None
+    p  = plan.get("params",{})
+    try:
+        lon0, lon1 = float(p.get("lon0")), float(p.get("lon1"))
+        lat0, lat1 = float(p.get("lat0")), float(p.get("lat1"))
+    except Exception:
+        return None
+    start, end = p.get("start"), p.get("end")
+    if not start or not end: return None
+
+    def parse_date(s: str) -> datetime:
+        return datetime.strptime(s, "%Y-%m-%d")
+
+    dx = abs(lon1 - lon0)
+    dy = abs(lat1 - lat0)
+    try:
+        dur_days = (parse_date(end) - parse_date(start)).days
+    except Exception:
+        return None
+
+    chunk = None
+    if dx > 90 or dy > 90:
+        chunk = {"mode": "monthly", "max_months": 1}
+    elif dx > 10 or dy > 10:
+        chunk = {"mode": "yearly", "max_years": 1}
+    else:
+        if dur_days > 365*10 + 3:
+            chunk = {"mode": "decade", "max_years": 10}
+    return chunk
+
 # --------------------
 # Code generation & guard
 # --------------------
@@ -593,23 +662,54 @@ def code_from_plan_via_llm(question: str, plan: Dict[str,Any], llm: str) -> str:
     endpoint = plan["endpoint"]; params = plan["params"]
     params_json = json.dumps(params, ensure_ascii=False, indent=2)
 
+    # MHW 分段提示（若需要）
+    chunk_hint = mhw_span_hint(plan)
+    chunk_line = ""
+    if chunk_hint:
+        if chunk_hint["mode"] == "monthly":
+            chunk_line = ("因為此 BBox 超過 90°×90°，依 OAS 只能查 1 個月。\n"
+                          "你必須以「逐月分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
+        elif chunk_hint["mode"] == "yearly":
+            chunk_line = ("因為此 BBox 超過 10°×10°，依 OAS 只能查 1 年。\n"
+                          "你必須以「逐年分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
+        elif chunk_hint["mode"] == "decade":
+            chunk_line = ("此 BBox 在 10°×10° 以內，依 OAS 最長 10 年。\n"
+                          "若時間區間超過 10 年，你必須以「每 10 年」或「逐年」分段，最後以 pandas.concat 串聯。")
+
+    # 強化規則：由「自然語意 → OAS → append → DataFrame 欄位」自動決定要畫的變數
     sysrule = (
-        "You are a Python assistant. Write a concise, runnable script that uses requests to call the ODB API (e.g., MHW API) which complies with OpenAPI Specifications(OAS) and get the fetched data from the response. "
-        "You MUST use the EXACT endpoint and params provided. "
-        "Call it with: requests.get(f\"{BASE_URL}{endpoint}\", params=params) within try-except block. "
-        "Do NOT manually concatenate query strings; do NOT add headers, API keys, or extra parameters. "
-        "If and only if the provided endpoint ends with '/csv' or params include format='csv', read the response as CSV via pandas.read_csv(io.StringIO(r.text)) with an 'import io'. "
-        "Otherwise parse JSON into a pandas DataFrame to manipulate the fetched data. "
-        "All comments (if any) must be in Traditional Chinese or English."
-        "Keep the code minimal and runable. If plotting or analyzing data is required in the question, provide an appropriate plot code for the fetched data. You should make sure the response format in OAS to use the available fields for correctly plotting. You should try to understand the programming requirements in the question and use your programming expertise to provide the correct code."
-    ) 
+        "You are a Python assistant. Write a concise, runnable script that uses requests to call the ODB API (e.g., MHW API) and load data into pandas.\n"
+        "MANDATORY rules:\n"
+        f"- Base URL is {BASE_URL}. Use EXACT endpoint and params provided below.\n"
+        "- Call with: requests.get(f\"{BASE_URL}{endpoint}\", params=params, timeout=60)\n"
+        "- Do NOT manually concatenate query strings; must use params=dict.\n"
+        "- Do NOT add headers, API keys, or any extra parameters.\n"
+        "- If and only if the endpoint ends with '/csv' OR params include format='csv':\n"
+        "    * read CSV via: pandas.read_csv(io.StringIO(r.text)) and import io.\n"
+        "- Otherwise (JSON):\n"
+        "    * parse JSON via r.json() (NOT pandas.read_json, NOT io.StringIO).\n"
+        "    * build DataFrame with pandas.DataFrame(r.json()).\n"
+        "- If the DataFrame has a 'date' column, convert it with pandas.to_datetime(df['date']).\n"
+        "- All comments must be Traditional Chinese or English.\n"
+        "- Variable choice:\n"
+        "    * Infer the intended variable(s) from the USER QUESTION semantics (e.g., '海溫'→sst; '海溫距平/異常'→sst_anomaly; '海洋熱浪等級'→level; '熱位移'→td),\n"
+        "      but only use variables that are (i) allowed by OAS/append and (ii) actually present in df.columns.\n"
+        "    * If multiple variables are requested, include them all in append (already provided) and plot the most relevant one per figure.\n"
+        "    * If a chosen variable is missing, print available columns and skip plotting the missing one (do not invent columns).\n"
+        "- Plotting:\n"
+        "    * Time series: use 'date' on x-axis when available.\n"
+        "    * Maps: build lon/lat 2D grid and use matplotlib.pyplot.pcolormesh (NOT scatter). Prefer meshgrid-style fill (no averaging) unless duplicates force aggregation.\n"
+        "    * If the variable is categorical (e.g., 'level'), use a discrete colormap; if the user provides color palettes, honor it.\n"
+        "- NEVER use pandas.read_json; NEVER wrap JSON with io.StringIO.\n"
+    )
+    if chunk_line:
+        sysrule += "\nCHUNKING constraint:\n- " + chunk_line + "\n"
 
     prompt = f"""{sysrule}
 
 User question:
 {question}
 
-Base URL: {BASE_URL}
 Endpoint: {endpoint}
 Params JSON (use exactly as-is):
 {params_json}
@@ -621,28 +721,69 @@ Wrap the script in a single ```python code fence.
     except Exception as e:
         return f"[LLM error during code generation] {e}"
 
-def static_guard_check(code: str, oas: Dict[str,Any]) -> Tuple[bool, str]:
+def code_continue_via_llm(question: str, plan: Dict[str,Any], last_code: str, llm: str) -> str:
+    """將上一輪 code 作為基底，要求 LLM 產生『合併後的完整單檔』"""
+    endpoint = plan["endpoint"]; params = plan["params"]
+    params_json = json.dumps(params, ensure_ascii=False, indent=2)
+
+    sysrule = (
+        "You are a Python assistant. The user says the previous script was incomplete or needs changes. "
+        "Take the PREVIOUS_SCRIPT below as the base, and output ONE complete, runnable script (single file) that:\n"
+        "- Keeps the correct parts of the previous code;\n"
+        "- Applies the user's new instructions (e.g., change dates, switch variables, finish map plotting);\n"
+        "- Strictly uses the EXACT endpoint and params provided below (via requests.get(..., params=params));\n"
+        "- JSON must be parsed with r.json(); CSV only via pandas.read_csv(io.StringIO(r.text));\n"
+        "- If plotting a map, use pcolormesh (not scatter), and grid the data by lon/lat (pivot) before plotting;\n"
+        "- If the DataFrame has 'date', convert it to datetime and use 'date' on time-series x-axis.\n"
+        "- Output ONLY the final full script inside a single ```python code fence."
+    )
+    prompt = f"""{sysrule}
+
+EXACT endpoint: {endpoint}
+EXACT params JSON:
+{params_json}
+
+PREVIOUS_SCRIPT:
+```python
+{last_code}
+User request now:
+{question}
+"""
+    try:
+        return (call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)).strip()
+    except Exception as e:
+        return f"[LLM error during code-continue] {e}"
+
+def static_guard_check(code: str, oas: Dict[str,Any], expect_csv: bool, expect_map: bool) -> Tuple[bool, str]:
+    if not code or not isinstance(code, str):
+        return False, "empty code"
+
+    # 端點白名單
     endpoints = set(oas.get("paths", []))
     used_paths = set(re.findall(r'["\'](/api/[^"\']+)["\']', code))
     for p in used_paths:
         if p not in endpoints:
             return False, f"code uses endpoint '{p}' not in whitelist"
 
-    # 禁手刻 query string
-    if re.search(r'\?.*=', code) and "params=" not in code:
-        return False, "code manually concatenates query string"
-
     # 必須使用 params=
     if "requests.get(" in code and "params=" not in code:
         return False, "requests.get is used without params= dict"
 
-    # CSV 檢查：/csv 或 format='csv' → 需 io.StringIO
-    is_csv_mode = any(p.endswith("/csv") for p in used_paths) or re.search(r"params\s*=\s*\{[\s\S]*?['\"]format['\"]\s*:\s*['\"]csv['\"]", code)
-    if is_csv_mode:
-        if "pd.read_csv(" in code and "io.StringIO(" not in code:
-            return False, "CSV must be read via pandas.read_csv(io.StringIO(r.text))"
-        if "import io" not in code:
-            return False, "CSV mode requires 'import io' for io.StringIO"
+    # 禁手刻 query string
+    if re.search(r'requests\.get\([^)]*\?[^)]*\)', code):
+        return False, "code manually concatenates query string"
+
+    # CSV / JSON 解析規則
+    if expect_csv:
+        # CSV 路徑或 format=csv → 必須用 read_csv + io.StringIO
+        if "pd.read_csv(" not in code or "io.StringIO(" not in code:
+            return False, "CSV mode requires pandas.read_csv(io.StringIO(r.text)) with import io"
+    else:
+        # JSON 路徑 → 禁用 read_json 與 io.StringIO(json)
+        if re.search(r'pd\.read_json\s*\(', code):
+            return False, "JSON must use r.json(); pd.read_json is forbidden"
+        if re.search(r'io\.StringIO\s*\(\s*r\.text\s*\)', code) and ("pd.read_csv(" not in code):
+            return False, "JSON must not use io.StringIO; parse via r.json()"
 
     # 參數鍵/append 值合法性
     m = re.search(r"params\s*=\s*\{([\s\S]*?)\}\s*", code)
@@ -664,7 +805,167 @@ def static_guard_check(code: str, oas: Dict[str,Any]) -> Tuple[bool, str]:
     if re.search(r'api[_-]?key|token|authorization|bearer', code, re.I):
         return False, "code mentions API key/token"
 
+    # 地圖任務時，不得用 scatter；至少包含 pcolormesh
+    if expect_map:
+        if re.search(r'\.scatter\s*\(', code):
+            return False, "map plotting must not use scatter"
+        if "pcolormesh(" not in code and "plt.pcolormesh(" not in code:
+            return False, "map plotting must use pcolormesh"
+
+    # code fence 完整性（避免截斷）
+    if "```python" in code and "```" not in code.strip().split("```python",1)[-1]:
+        return False, "code fence likely truncated"
+
     return True, ""
+
+def build_timeseries_fallback_template(plan: Dict[str, Any], expect_csv: bool) -> str:
+    endpoint = plan["endpoint"]
+    params = plan["params"]
+
+    # 從 append 決定候選變數；若沒有 append 就在 df 欄位內挑（排除 lon/lat/date）
+    append_vals = []
+    if isinstance(params.get("append"), str):
+        append_vals = [v.strip() for v in params["append"].split(",") if v.strip()]
+
+    code = [
+        "# 最小可執行範例（時序圖）：依需求自行調整參數與欄位",
+        "import requests",
+        "import pandas as pd",
+        "import matplotlib.pyplot as plt",
+        f'BASE = "{BASE_URL}"',
+        f'ENDPOINT = "{endpoint}"',
+        f"params = {json.dumps(params, ensure_ascii=False, indent=2)}",
+        "r = requests.get(f\"{BASE}{ENDPOINT}\", params=params, timeout=60)",
+        "r.raise_for_status()",
+    ]
+
+    if expect_csv:
+        code += [
+            "import io",
+            "df = pd.read_csv(io.StringIO(r.text))",
+        ]
+    else:
+        code += [
+            "df = pd.DataFrame(r.json())",
+        ]
+
+    code += [
+        "if 'date' in df.columns:",
+        "    df['date'] = pd.to_datetime(df['date'])",
+        "",
+        "# 依 append 推斷要畫的變數；若未指定，從欄位中挑選（略過 lon/lat/date）",
+        f"append_hint = {append_vals!r}",
+        "candidates = [c for c in append_hint if c in df.columns]",
+        "if not candidates:",
+        "    candidates = [c for c in df.columns if c not in ('lon','lat','date')]",
+        "if not candidates:",
+        "    raise RuntimeError(f'找不到可繪製的欄位；可用欄位：{list(df.columns)}')",
+        "Y_COL = candidates[0]",
+        "",
+        "print(df.head())",
+        "if 'date' in df.columns:",
+        "    df = df.sort_values('date')",
+        "    df.plot(x='date', y=Y_COL, figsize=(10,4), title=f'{Y_COL} timeseries')",
+        "    plt.tight_layout()",
+        "    plt.show()",
+        "",
+    ]
+    return "\n".join(code)
+
+def build_map_fallback_template(
+    plan: Dict[str, Any],
+    expect_csv: bool,
+    month_hint: Optional[str]
+) -> str:
+    endpoint = plan["endpoint"]
+    params = plan["params"]
+
+    append_vals = []
+    if isinstance(params.get("append"), str):
+        append_vals = [v.strip() for v in params["append"].split(",") if v.strip()]
+
+    code = [
+        "# 最小可執行範例（地圖分佈）：meshgrid, 依需求自行調整參數",
+        "import requests",
+        "import pandas as pd",
+        "import numpy as np",
+        "import matplotlib.pyplot as plt",
+        "from matplotlib.colors import ListedColormap",
+        f'BASE = "{BASE_URL}"',
+        f'ENDPOINT = "{endpoint}"',
+        f"params = {json.dumps(params, ensure_ascii=False, indent=2)}",
+        "r = requests.get(f\"{BASE}{ENDPOINT}\", params=params, timeout=60)",
+        "r.raise_for_status()",
+    ]
+
+    if expect_csv:
+        code += [
+            "import io",
+            "df = pd.read_csv(io.StringIO(r.text))",
+        ]
+    else:
+        code += [
+            "df = pd.DataFrame(r.json())",
+        ]
+
+    code += [
+        "if 'date' in df.columns:",
+        "    df['date'] = pd.to_datetime(df['date'])",
+        "",
+        "# 目標月份（若問題含 YYYY-MM 則使用；否則用 params['start'] 的月份）",
+        f"target_month = {json.dumps(month_hint)}",
+        "if target_month is None and 'start' in params:",
+        "    try:",
+        "        target_month = pd.to_datetime(params['start']).strftime('%Y-%m')",
+        "    except Exception:",
+        "        target_month = None",
+        "",
+        "if target_month and 'date' in df.columns:",
+        "    mdf = df[df['date'].dt.strftime('%Y-%m') == target_month].copy()",
+        "else:",
+        "    mdf = df.copy()",
+        "",
+        "# 依 append 推斷要畫的變數；若未指定，從欄位中挑選（略過 lon/lat/date）",
+        f"append_hint = {append_vals!r}",
+        "candidates = [c for c in append_hint if c in mdf.columns]",
+        "if not candidates:",
+        "    candidates = [c for c in mdf.columns if c not in ('lon','lat','date')]",
+        "if not candidates:",
+        "    raise RuntimeError(f'找不到可繪製的欄位；可用欄位：{list(mdf.columns)}')",
+        "VAR = candidates[0]",
+        "",
+        "for col in ['lon','lat', VAR]:",
+        "    if col not in mdf.columns:",
+        "        raise KeyError(f\"欄位 {col!r} 不在回應資料中。可用欄位：{list(mdf.columns)}\")",
+        "",
+        "# 轉為規則網格（逐點填入）",
+        "lons = np.sort(mdf['lon'].unique())",
+        "lats = np.sort(mdf['lat'].unique())",
+        "Lon, Lat = np.meshgrid(lons, lats)",
+        "Z = np.full((lats.size, lons.size), np.nan)",
+        "lon_index = {v:i for i,v in enumerate(lons)}",
+        "lat_index = {v:i for i,v in enumerate(lats)}",
+        "for _, row in mdf.iterrows():",
+        "    i = lat_index.get(row['lat']); j = lon_index.get(row['lon'])",
+        "    if i is not None and j is not None:",
+        "        Z[i, j] = row[VAR]",
+        "",
+        "# 類別變數（如 level）給離散色盤；否則使用連續色盤",
+        "if VAR == 'level':",
+        "    LEVEL_COLORS = ['#f5c268', '#ec6b1a', '#cb3827', '#7f1416']",
+        "    cmap = ListedColormap(LEVEL_COLORS)",
+        "    pcm = plt.pcolormesh(Lon, Lat, Z, shading='nearest', cmap=cmap, vmin=0.5, vmax=4.5)",
+        "else:",
+        "    pcm = plt.pcolormesh(Lon, Lat, Z, shading='nearest')",
+        "plt.colorbar(pcm, label=VAR)",
+        "plt.xlabel('Longitude'); plt.ylabel('Latitude')",
+        "title = f\"{VAR} distribution\" + (f\" ({target_month})\" if target_month else '')",
+        "plt.title(title)",
+        "plt.tight_layout()",
+        "plt.show()",
+        "",
+    ]
+    return "\n".join(code)
 
 # --------------------
 # Non-code prompt
@@ -678,7 +979,7 @@ def build_prompt(question: str, ctx: List[Dict[str, Any]], oas_info: Optional[Di
         "回答使用繁體中文（不要使用簡體字詞）；英文術語可保留。"
     )
     if oas_info:
-        sys_rule += f"（OAS 參數白名單：{', '.join(oas_info.get('params', []))}; append 允許值：{', '.join(oas_info.get('append_allowed', []))}）"
+        sys_rule += f"（OAS 參數白名單：{', '.join(oas_info.get('params', []))}；append 允許值：{', '.join(oas_info.get('append_allowed', []))}）"
 
     ctx_text = ""
     for i, h in enumerate(ctx, 1):
@@ -690,7 +991,6 @@ def build_prompt(question: str, ctx: List[Dict[str, Any]], oas_info: Optional[Di
     return f"{sys_rule}\n\n問題：{question}\n\n依據：\n{ctx_text}"
 
 def format_citations(hits: List[Dict[str,Any]], question: str) -> str:
-    # 優先序：api_spec > code_snippet/code_example > web_article > cli_tool_guide > other
     def pri(p: Dict[str,Any]) -> int:
         dt = (p.get("doc_type") or "").lower()
         if dt == "api_spec": return 0
@@ -724,9 +1024,9 @@ def answer_once(
     history: Optional[List[Tuple[str,str]]] = None,
     ctx_only: bool = False,
 ) -> str:
-    global LAST_PLAN
+    global LAST_PLAN, LAST_CODE_TEXT
 
-    # 1) 分類（只回 code/explain）
+    # 1) 分類
     mode = llm_choose_mode(question, llm=llm)
 
     # 2) 檢索 & OAS
@@ -738,15 +1038,20 @@ def answer_once(
         prompt = build_prompt(question, hits, oas_info)
         if ctx_only: return prompt
         out = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
+        out = out or "（無法在已知資料中產生可靠答案）"
         cites = format_citations(hits, question)
+        LAST_CODE_TEXT = None
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
-    # 4) 程式題：沒有 OAS 也不硬產 code → 解說
+
+    # 4) 程式題但無 OAS → 解說
     if not oas_info:
         prompt = build_prompt(question, hits, None)
         if ctx_only: return prompt
         out = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
+        out = out or "（無法在已知資料中產生可靠答案）"
         cites = format_citations(hits, question)
+        LAST_CODE_TEXT = None
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
     # CSV 意圖與年份 hint
@@ -756,6 +1061,8 @@ def answer_once(
     if years:
         y = years[0]
         years_hint = (f"{y}-01-01", f"{y}-12-31")
+    month_hint = month_hint_from_question(question)
+    expect_map = bool(MAP_HINT_RE.search(question))
 
     # 5) 規劃
     prev_plan = LAST_PLAN
@@ -772,10 +1079,12 @@ def answer_once(
     if not plan:
         prompt = build_prompt(question, hits, oas_info)
         out = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
+        out = out or "（無法在已知資料中產生可靠答案）"
         cites = format_citations(hits, question)
+        LAST_CODE_TEXT = None
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
-    # 把使用者明確點名的變數寫回 append（白名單約束）
+    # 使用者明確點名的變數 → 寫回 append（白名單約束）
     req_vars = extract_user_requested_vars(question, oas_info.get("append_allowed", []))
     if req_vars:
         pp = plan.setdefault("params", {})
@@ -786,12 +1095,15 @@ def answer_once(
         if cur:
             pp["append"] = ",".join(sorted(cur))
 
+    # 承接上一輪（補缺的空間/時間/append、CSV 切換）
+    plan = inherit_from_prev_if_reasonable(plan, prev_plan, oas_info, csv_requested, debug=debug)
+
     # 第一次驗證
     ok, msg = validate_plan(plan, oas_info)
     if debug and not ok:
         print(f"[DEBUG] Plan invalid@first: {msg}")
 
-    # 6) 只有在需要時才呼叫 refine（減少第 3 次 LLM）
+    # 6) 覺得需要才 refine（減少一次呼叫）
     if (not ok) or _needs_refine(plan, req_vars, years_hint):
         plan = llm_refine_plan(question, oas_info, plan, prev_plan, llm, debug=debug)
 
@@ -802,42 +1114,43 @@ def answer_once(
     if not ok:
         prompt = build_prompt(question, hits, oas_info)
         out = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
+        out = out or "（無法在已知資料中產生可靠答案）"
         cites = format_citations(hits, question)
+        LAST_CODE_TEXT = None
         return f"{out}\n\n---\n參考資料：\n{cites}"
 
-    # 保存 plan（供追問承接：如「改成下載 CSV」）
+    # 保存 plan（供追問承接）
     LAST_PLAN = {"endpoint": plan["endpoint"], "params": dict(plan["params"])}
 
-    # 7) 產 code + 守門
-    code = code_from_plan_via_llm(question, plan, llm=llm)
-    ok2, msg2 = static_guard_check(code, oas_info)
+    # 7) 產 code + 守門（加強：JSON 禁用 pd.read_json / io.StringIO）
+    expect_csv = plan["endpoint"].endswith("/csv") or (plan["params"].get("format") == "csv")
+    wants_continue = bool(CONTINUE_HINT.search(question)) and bool(LAST_CODE_TEXT)
+
+    if wants_continue:
+        code = code_continue_via_llm(question, plan, LAST_CODE_TEXT or "", llm=llm) or ""
+    else:
+        code = code_from_plan_via_llm(question, plan, llm=llm) or ""
+    
+    ok2, msg2 = static_guard_check(code, oas_info, expect_csv=expect_csv, expect_map=expect_map)
     if not ok2 and debug:
         print(f"[DEBUG] Code violates guard: {msg2}")
+
+    # 地圖守門失敗 → 地圖 fallback；否則通用時序 fallback
     if not ok2:
-        # 最小模板（仍完全遵守 plan）
-        endpoint = plan["endpoint"]; params = plan["params"]
-        code = (
-            "```python\n"
-            "# 最小可執行範例：依需求自行調整參數\n"
-            "import requests\n"
-            "import pandas as pd\n"
-            "import matplotlib.pyplot as plt\n"
-            "import io\n\n"
-            f'BASE = "{BASE_URL}"\n'
-            f'ENDPOINT = "{endpoint}"\n'
-            f"params = {json.dumps(params, ensure_ascii=False, indent=2)}\n\n"
-            "r = requests.get(f\"{BASE}{ENDPOINT}\", params=params, timeout=60)\n"
-            "r.raise_for_status()\n"
-            "ctype = r.headers.get('content-type','')\n"
-            "if 'text/csv' in ctype or ENDPOINT.endswith('/csv') or params.get('format')=='csv':\n"
-            "    df = pd.read_csv(io.StringIO(r.text))\n"
-            "else:\n"
-            "    df = pd.DataFrame(r.json())\n"
-            "if 'date' in df.columns:\n"
-            "    df['date'] = pd.to_datetime(df['date'])\n"
-            "print(df.head())\n"
-            "```"
-        )
+        code = (build_map_fallback_template(plan, expect_csv, month_hint)
+                if expect_map else
+                build_timeseries_fallback_template(plan, expect_csv))
+
+    # 避免空答
+    if not code.strip():
+        code = (build_map_fallback_template(plan, expect_csv, month_hint)
+                if expect_map else
+                build_timeseries_fallback_template(plan, expect_csv))
+
+    # 記住這次完整 code（限制長度以免爆記憶）
+    LAST_CODE_TEXT = code
+    if LAST_CODE_TEXT and len(LAST_CODE_TEXT) > 18000:
+        LAST_CODE_TEXT = LAST_CODE_TEXT[-18000:]
 
     cites = format_citations(hits, question)
     return f"{code}\n\n=== 參考資料 ===\n{cites}"
@@ -895,4 +1208,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    if not ok2:
+        code = build_fallback_template(plan, expect_csv)

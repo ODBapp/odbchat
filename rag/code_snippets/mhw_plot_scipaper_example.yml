@@ -193,7 +193,8 @@ content: |
   
   plt.title("(a) SST Anomalies (July 2022) with trend")
   
-  # Plot detrended SST anomalies (lower-left)
+  # Plot detrended SST anomalies (lower-left) timeseries, as well as
+  # plot distribution map of SST anomalies (right-column subplot) ; 空間分佈地圖
   plt.subplot(2, 2, 3)
   m = Basemap(projection="cyl", llcrnrlon=lon0, llcrnrlat=lat0, urcrnrlon=lon1, urcrnrlat=lat1, resolution="i")
   m.drawcoastlines()

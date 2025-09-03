@@ -16,3 +16,4 @@
     - A temporary version to improve rag_cli.py capabilities and analysis Qdrant hits/n5,n6
 #### v0.2.0 More statble LLM chat combine with code and explin mode. Better restructure by checking Qdrant statistics/n7
     - a more stable version that split code/explain mode by LLM itself 
+    - a temp version that provide code template to plot map or timeseries, need tuned/n1

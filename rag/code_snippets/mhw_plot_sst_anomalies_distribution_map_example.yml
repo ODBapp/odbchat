@@ -18,7 +18,7 @@ depends_on:
 source_file: "https://github.com/ODBapp/2025_NODASS_workshop/blob/main/src/timeseries/timeseries01.ipynb"
 source_type: code
 purpose: "以程式範例說明如何使用ODB MHW API調用海表溫距平值的時間和空間資料並畫地圖與時間序列圖"
-faq: ["如何在地圖上呈現海溫", "Provide python examples", "How to get timeseries of marine data", "畫海溫趨勢變化"]
+faq: ["如何在地圖上呈現海溫(分佈地圖)", "Provide python examples", "How to get timeseries of marine data", "畫海溫趨勢變化"]
 content: |
   # Usage Note
   '''
@@ -88,6 +88,7 @@ content: |
   ]
   '''
 
+  # Niño 3.4 區域範圍
   # region for Niño 3.4 (5°N–5°S, 170°W–120°W)
   lon0, lon1 = -170, -120  
   lat0, lat1 = -5, 5
@@ -152,7 +153,7 @@ content: |
                  linewidth=1.5, label=name, color=colors[name])
       plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=4, fontsize='small')
   
-  
+  # 畫出海表溫距平值分佈地圖 distribution map at specific month, year of SST anomalies by ODB MHW API
   def plot_ssta_grid(grid, date, lon0, lon1, lat0, lat1):
       plt.figure(figsize=(12, 5))
       fig, ax = plt.subplots(figsize=(12, 4))
@@ -227,6 +228,8 @@ content: |
       else:
           return None
 
+  # ODB MHW API 資料最小時間為1982-01-01，再往前沒有資料
+  # Minimum date for ODB MHW API: 1982-01-01
   start_year, end_year = 1982, 2024  # Iterate year range to get MHW data
   ylon0, ylat0, ylon1, ylat1 = -170, -5, -120, 5  # Niño 3.4 region
   ydata = fetch_yearly_data(ylon0, ylat0, ylon1, ylat1, start_year, end_year)
