@@ -27,7 +27,7 @@ sudo ln -s /home/odbadmin/backup/src/llama.cpp/build/bin/llama-server ~/.local/b
 sudo ln -s /home/odbadmin/backup/src/llama.cpp/build/bin/llama-cli ~/.local/bin/
 
 # run 12b model
-llama-server -m /home/odbadmin/proj/odbchat/models/google_gemma-3-12b-it-Q8_0.gguf -c 3072 -ngl 20 --port 8001
+llama-server -m /home/odbadmin/proj/odbchat/models/google_gemma-3-12b-it-Q8_0.gguf -c 4096 -ngl 20 --port 8001
 
 # run 4b model
 llama-server -m /home/odbadmin/proj/odbchat/models/google_gemma-3-4b-it-Q4_K_M.gguf -c 4096 -ngl 24 --port 8001

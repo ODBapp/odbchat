@@ -17,3 +17,4 @@
 #### v0.2.0 More statble LLM chat combine with code and explin mode. Better restructure by checking Qdrant statistics/n7
     - a more stable version that split code/explain mode by LLM itself 
     - a temp version that provide code template to plot map or timeseries, need tuned/n1
+    - deprecate code template if LLM not reply empty code, need tuned/n2
