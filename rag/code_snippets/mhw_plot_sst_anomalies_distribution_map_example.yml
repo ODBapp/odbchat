@@ -49,11 +49,6 @@ content: |
   from matplotlib import cm
   from mpl_toolkits.basemap import Basemap
   
-  import os
-  from pathlib import Path
-  os.chdir(Path().resolve()) 
-  print(os.getcwd())
-  
   # Step 1: ODB MHW API (OpenAPI) Fetch according to its OpenAPI Specification (OAS)
   # Find API server at OAS: https://api.odb.ntu.edu.tw/hub/swagger?node=odb_mhw_v1
   def fetch_mhw_data(lon0, lat0, lon1, lat1, start, end):
