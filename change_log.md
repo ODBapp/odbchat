@@ -19,4 +19,5 @@
     - a temp version that provide code template to plot map or timeseries, need tuned/n1
     - deprecate code template if LLM not reply empty code, need tuned/n2
     - deprecate second_try LLM to reduce response time, need tuned/n3
-	- small fix for more accurate code rag extract, remove imports/n4, small fix: scroing and rerank for qdrant/n5
+	- small fix for more accurate code rag extract, remove imports/n4, small fix: scoring and rerank for qdrant/n5
+#### v0.2.1 A new scoring-rerank-diversify way for qdrant and try to improve first-round answer/n1
