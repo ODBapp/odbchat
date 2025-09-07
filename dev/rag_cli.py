@@ -442,7 +442,8 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
         "Spatial-related params guidance:\n"
         "- If the question mentions a region or place, estimate an appropriate spatial range or constraint for that region/place by using available geographic parameters from the whitelist "
         "(e.g., any params whose names relate to lon/lat, or bbox: lon0,lat0,lon1,lat1), but use ONLY parameter names present in the whitelist. "
-        "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point.\n"
+        "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point. "
+        "Spatial-related params defined in OAS/whitelist (e.g., lon/lat or lon0/lat0) are usually required. DO NOT leave it empty or undefined.\n"
         "Temporal-related params guidance:\n"
         "- If the question implies a specific year or range, set temporal-related params (e.g., start/end, or any params whose name relate to date/datetime but use ONLY parameter names present in the whitelist) accordingly (YYYY-MM-DD). "
         "- You may deduce a 12-month range when the user mentions a single year. "
@@ -682,57 +683,60 @@ def mhw_span_hint(plan: Dict[str,Any]) -> Optional[Dict[str,Any]]:
 
 def extract_code_from_markdown(md: str) -> str:
     """
-    先抓 ```python ... ```；若沒有 fence，再用啟發式從第一段像是 Python 的地方截到尾端。
-    回傳純 code（不含三反引號），若找不到則回空字串。
+    更健壯的擷取：優先抓第一個 ```python fence，
+    其次抓第一個 ``` 任意語言。若沒有結尾 ```，取到文末。
+    最後做一次剝殼與去掉 BOM/隱藏字元。
     """
-
     if not md:
         return ""
-
-    # 1) 標準：三反引號
-    m = re.search(r"```(?:python)?\s*([\s\S]*?)```", md, flags=re.IGNORECASE)
+    # 優先 python fence
+    m = re.search(r"```(?:python|py)\s*\n([\s\S]*?)\n```", md, flags=re.IGNORECASE)
     if m:
         return m.group(1).strip()
 
-    # 2) 備援：無 fence，偵測「像是 Python 起手式」的第一行
-    #    常見 pattern：import、from ... import、BASE_URL =、endpoint =、def ...:
-    start_pat = re.compile(
-        r"(?m)^(?:\s*#.*\n)*\s*(?:from\s+\S+\s+import\s+\S+|import\s+\S+|BASE[_ ]?URL\s*=|ENDPOINT\s*=|params\s*=|def\s+\w+\s*\(|class\s+\w+\s*:)",
-        re.IGNORECASE
-    )
-    m2 = start_pat.search(md)
-    if not m2:
-        return ""
+    # 允許缺少結尾 fence：從第一個 ```python 開始截到文末
+    m2 = re.search(r"```(?:python|py)\s*\n([\s\S]*)$", md, flags=re.IGNORECASE)
+    if m2:
+        return m2.group(1).strip()
 
-    start = m2.start()
+    # 其次：任意 ```...``` fence
+    m3 = re.search(r"```\s*\n([\s\S]*?)\n```", md)
+    if m3:
+        return m3.group(1).strip()
 
-    # 3) 嘗試找可能的「非程式」結尾（下一個大標、參考區、或三個以上連續空行）
-    tail = md[start:]
-    stop = re.search(r"(?m)^(?:#{1,6}\s|\[DEBUG\]|\-\-\-|\*\*參考|\*\*References|\Z)", tail)
-    code = tail[:stop.start()] if stop else tail
+    # 允許任意 ``` 開頭到文末
+    m4 = re.search(r"```\s*\n([\s\S]*)$", md)
+    if m4:
+        return m4.group(1).strip()
 
-    # 4) 去掉可能混入的多餘 markdown 符號
-    code = re.sub(r"^```(?:python)?\s*", "", code.strip())
-    code = re.sub(r"\s*```$", "", code.strip())
+    # 沒有 fence，只能嘗試把整段當成 code（常見於 LLM 回覆純 code 無 fence）
+    return md.strip()
 
-    # 太短視為抽取失敗
-    return code if len(code) >= 20 else ""
 
 # --------------------
 # Code generation & guard
 # --------------------
-def _check_python_syntax(code: str):
-    """
-    回傳 (ok: bool, err_msg: Optional[str])
-    用內建 compile/ast 檢查是否語法完整；若失敗，回傳錯誤訊息摘要。
-    """
+def _check_python_syntax(src: str) -> tuple[bool, str | None]:
     try:
-        compile(code, "<llm_code>", "exec")
+        import ast
+        ast.parse(src)
         return True, None
     except SyntaxError as e:
-        # 精簡錯誤：行號+訊息
         return False, f"SyntaxError at line {e.lineno}: {e.msg}"
 
+
+def _looks_like_complete_code(code: str) -> bool:
+    """
+    不呼叫 LLM 的快速完備度判斷：
+    - 語法可解析（ast.parse OK）→ 視為完整。
+    - 若解析失敗，但最後一行是未閉合括號/字串，才建議續寫。
+    """
+    ok, _ = _check_python_syntax(code)
+    if ok:
+        return True
+    # 若你想更嚴格，可補充括號/引號配對檢查，但多半沒有必要。
+    return False
+    
 def _trim_trailing_partial_line(code: str) -> str:
     """
     若最後一行疑似半句（例如不含右括號且包含 '('），就先移除該行，讓續寫器重印正確行。
@@ -749,9 +753,6 @@ def _trim_trailing_partial_line(code: str) -> str:
     return code
 
 def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
-    """
-    共用的程式產生規則（code 與 continue 共用），避免重複與遺漏。
-    """
     base = [
         "You are a Python assistant. Return a single runnable script (or a pure continuation if explicitly asked).",
         f"- Use server URL BASE_URL = {BASE_URL}. Use the EXACT endpoint and params provided (whitelist from OAS).",
@@ -761,16 +762,21 @@ def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
         "- Use CSV parsing (pandas.read_csv(io.StringIO(r.text))) ONLY IF the endpoint endswith('/csv') OR params.format=='csv',",
         "  AND only if the user explicitly asked for CSV/download.",
         "- If 'date' exists, convert with pandas.to_datetime(df['date']). For time series, use 'date' on x-axis.",
-        "- Decide plot type from intent: time series (trend/變化) vs. map (spatial distribution) of a data variable in fetched data.",
-        "- For map:",
-        "  (1) extract unique sorted lon/lat from the DATAFRAME columns (not synthetic ranges),",
-        "  (2) create numpy.meshgrid from those unique values,",
-        "  (3) reshape values of the data variable in df so that each [lat,lon] cell aligns with meshgrid,",
-        "  (4) use matplotlib.pyplot.pcolormesh (NEVER scatter).",
-        "- Treat 'level' (in df, fetched data from ODB MHW API) as categorical; use a discrete colormap for categorical data plotting, e.g., ['#f5c268','#ec6b1a','#cb3827','#7f1416'] for MHW 'level' data.",
+        "- Decide plot type from intent: time series (trend/變化) vs. map (spatial distribution) of a data variable.",
+        "- If you adapt from EXAMPLE snippets in RAG_NOTES, note that IMPORTS ARE REMOVED on purpose — add ONLY the imports you actually need.",
+        # 單月地圖不 loop
+        "- If the user asks for a spatial distribution at a specific month/day (e.g., '2002-01' or '2002-01-01'), fetch ONCE for that month only; DO NOT loop.",
+        # map 正確值對齊方式：pivot 或 分組填格
+        "- For map, build a gridded array aligned to lon/lat:",
+        "  (1) extract unique sorted lon/lat from df columns (not synthetic linspace),",
+        "  (2) create numpy.meshgrid from those unique lon/lat,",
+        "  (3) align values to grid cells using either:",
+        "      • pivot_table(index='lat', columns='lon', values=VAR, aggfunc='mean'), or",
+        "      • explicit fill: create an empty 2D array Z[lat,lon] and fill by iterating df rows to the matching [lat,lon] cell.",
+        "  (4) use matplotlib.pyplot.pcolormesh(Lon, Lat, Z, shading='auto') (NEVER scatter).",
+        "- Treat 'level' (from ODB MHW API) as categorical; use a discrete colormap (e.g., ['#f5c268','#ec6b1a','#cb3827','#7f1416']).",
         "- Never invent endpoints/params/columns; only use those allowed by OAS and columns present in df.",
         "- Prefer bounded for-loops for chunking (e.g., for year in range(...)); DO NOT write open-ended while loops.",
-        "- Do NOT import or use mpl_toolkits.basemap. Use matplotlib core only.",
         "- Include only the imports that are actually used in the generated code. Exclude all unused imports before finalizing."
     ]
     if chunk_line:
@@ -843,40 +849,33 @@ def code_from_plan_via_llm(question: str, plan: dict, llm: str, debug: bool=Fals
         print(f"[DEBUG] LLM raw preview: {(txt or '')[:300].replace(chr(10),'\\n')}")
 
     code = extract_code_from_markdown(txt)
-    has_fence = "```" in (txt or "")
-    paired_fence = bool(re.search(r"```(?:python)?\s*[\s\S]*?```", txt or "", flags=re.IGNORECASE))
-
     if debug:
-        print(f"[DEBUG] LLM reply contains code fence: {has_fence}")
+        print(f"[DEBUG] LLM reply contains code fence: {('```' in (txt or ''))}")
         print(f"[DEBUG] extracted code length: {len(code)}")
-
-    # 1) 若完全沒抓到 code → 請同模型「直接輸出完整單檔」
-    if not code or len(code) < 30:
+    
+    unclosed = ("```" in (txt or "")) and not re.search(r"```(?:python|py)?\s*[\s\S]*?```", txt, flags=re.IGNORECASE)
+    if unclosed:
         if debug:
-            print("[DEBUG] EMPTY_CODE: first reply had no usable code; will ask LLM to output a full script directly.")
-        return code_continue_via_llm(
-            question="請輸出一份完整且可執行的單檔腳本，不要解說；務必遵守前述規則與 OAS。",
-            plan=plan,
-            last_code="",
-            llm=llm,
-            debug=debug
-        ).strip()
-
-    # 2) 若 fence 未閉合 → 觸發一次續寫（不加任何額外 comment，以免誤判縮排）
-    stitched = code.strip()
-    if has_fence and not paired_fence:
-        if debug:
-            print("[DEBUG] Detected unclosed code fence; will auto-continue once.")
-        stitched = _trim_trailing_partial_line(stitched) if '_trim_trailing_partial_line' in globals() else stitched
-        more = code_continue_via_llm(
-            question="請從上段未完成處繼續，補足缺漏行，完成繪圖與收尾；不要重複前段程式碼；保持縮排一致。",
-            plan=plan,
-            last_code=stitched,
-            llm=llm,
-            debug=debug
-        )
-        if more:
-            stitched = (stitched.rstrip() + "\n" + more.lstrip()).strip()
+            print("[DEBUG] Detected unclosed code fence; checking syntax to decide continue.")
+        if _looks_like_complete_code(code):
+            if debug:
+                print("[DEBUG] Code parses fine; skip auto-continue despite unclosed fence.")
+            stitched = code.strip()
+        else:
+            if debug:
+                print("[DEBUG] Code not syntactically complete; will auto-continue once.")
+            stitched = code.strip()
+            more = code_continue_via_llm(
+                question="請從上段未完成處續寫，補足缺漏行，完成繪圖與收尾；不要重複前段程式碼；保持縮排正確一致。",
+                plan=plan,
+                last_code=stitched,
+                llm=llm,
+                debug=debug
+            )
+            if more:
+                stitched = stitched.rstrip() + "\n\n" + more.lstrip()
+    else:
+        stitched = code.strip()
 
     return stitched
 
@@ -1121,83 +1120,230 @@ def build_map_fallback_template(plan: Dict[str, Any], expect_csv: bool, month_hi
     ]
     return "\n".join(lines)
 
-def _sanitize_notes(s: str) -> str:
-    """移除 RAG 原文中的 code fences，避免干擾 LLM 與抽取器。"""
-    if not s:
-        return s
-    # 去掉 ```...```，保留內容
-    s = re.sub(r"```(?:[a-zA-Z]+)?\s*([\s\S]*?)```", r"\1", s)
-    return s.strip()
-
-def collect_rag_notes(hits: list, max_chars: int = 1200, debug: bool = False) -> str:
+def _extract_title_from_yaml_front_matter(text: str) -> str | None:
     """
-    從 LAST_HITS 中挑重點，優先納入 code_snippet 的「程式示意」片段（僅擷取 code fence 內文，去掉贅述），
-    再補 1~2 則定義/區域說明（web_article/note）。避免把長篇 code 原樣塞進 prompt 以致模型照抄。
+    從 YAML front-matter 或任意 YAML 片段取出 title。
+    支援：
+      - 有 '---' 的 front-matter 區塊
+      - 沒有 '---' 時，掃描前幾十行找 'title:' 行
     """
-    import re, textwrap
+    if not isinstance(text, str) or not text.strip():
+        return None
 
-    # 依類型加權：code_snippet > note > web_article > others
-    weights = {"code_snippet": 3, "note": 2, "web_article": 1}
-    def score(h):
-        t = (h.get("payload") or {}).get("doc_type") or ""
-        return weights.get(t, 0)
+    s = text.lstrip()
+    # 情況 A：沒有 '---'，就直接在全文找 title:
+    if not s.startswith('---'):
+        m_any = re.search(r'^\s*title\s*:\s*(.+)$', text, flags=re.MULTILINE)
+        if m_any:
+            raw = m_any.group(1).strip()
+            if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
+                raw = raw[1:-1]
+            return raw or None
+        return None
 
-    hits = sorted(hits or [], key=score, reverse=True)
-
-    chunks = []
-    budget = max_chars
-
-    # 先找一則 code_snippet：只取第一段 ```python … ``` 內文，並且砍到 300~500 chars
-    for h in hits:
-        p = h.get("payload") or {}
-        if p.get("doc_type") == "code_snippet":
-            text = p.get("content") or ""
-            m = re.search(r"```(?:python)?\s*([\s\S]+?)```", text, flags=re.IGNORECASE)
-            if m:
-                code = m.group(1).strip()
-                code = re.sub(r"^\s*#.*$", "", code, flags=re.MULTILINE)  # 去註解行
-                code = re.sub(r"\n{3,}", "\n\n", code)
-                code = code[:500]
-                block = "EXAMPLE (do not copy verbatim; adapt patterns only; exclude unused imports):\n" + "```\n" + code + "\n```"
-                if len(block) <= budget:
-                    chunks.append(block)
-                    budget -= len(block)
-                if debug: print(f"[DEBUG] Get code example in RAG: {" ".join(code.split()[-60:])}")
-            break  # 只取一則
-
-    # 再補 1~2 則非 code 的要點（標題 + 摘要首段）
-    for h in hits:
-        p = h.get("payload") or {}
-        if p.get("doc_type") == "code_snippet":
-            continue
-        title = p.get("title") or p.get("canonical_url") or "note"
-        content = (p.get("content") or "").strip()
-        if not content:
-            continue
-        para = content.splitlines()
-        # 找一段最像定義/範圍的句子
-        head = ""
-        for line in para:
-            if line.strip():
-                head = line.strip()
-                break
-        snippet = f"- {title}: {head}"
-        snippet = snippet[:300]
-        if len(snippet) + 1 <= budget:
-            chunks.append(snippet)
-            budget -= (len(snippet) + 1)
-        if len(chunks) >= 3:  # 最多 3 塊
+    # 情況 B：有 '---'，擷取第一段 header
+    lines = s.splitlines()
+    i = 1  # 跳過第一個 '---'
+    buf = []
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == '---':
             break
+        # 有些檔案以 content: | 當成 header 與 body 的分水嶺
+        if re.match(r'^\s*content\s*:\s*\|', line):
+            break
+        buf.append(line)
+        i += 1
 
-    note = "\n".join(chunks).strip()
+    header = "\n".join(buf)
+    m = re.search(r'^\s*title\s*:\s*(.+)$', header, flags=re.MULTILINE)
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
+        raw = raw[1:-1]
+    return raw or None
+
+
+def _type_of(hit: dict) -> str:
+    """
+    推斷 doc_type/type，依序檢查：
+      1) 頂層 doc_type/type
+      2) payload (dict) 裡的 doc_type/type
+      3) payload (str/YAML) 的 'doc_type:'
+      4) 否則回傳 'note'
+    """
+    hit = hit or {}
+    t = (hit.get("doc_type") or hit.get("type") or "").strip().lower()
+    if t:
+        return t
+    payload = hit.get("payload")
+    if isinstance(payload, dict):
+        t = (payload.get("doc_type") or payload.get("type") or "").strip().lower()
+        if t:
+            return t
+    elif isinstance(payload, str):
+        m = re.search(r'^\s*doc_type\s*:\s*([A-Za-z0-9_+-]+)\s*$', payload, flags=re.MULTILINE)
+        if m:
+            return m.group(1).strip().lower()
+    return "note"
+
+
+def _best_title(hit: dict, idx: int, default: str = "") -> tuple[str, str]:
+    """
+    取得最佳標題與其來源（source），回傳 (title, source)。
+    優先序：
+      1) 頂層：title/doc_title/name/source_title/filename/basename/path/url/id
+      2) 巢狀 meta/front/metadata/front_matter: {title}
+      3) payload=dict 的 title
+      4) payload=str 的 YAML 片段
+      5) content/text 的 YAML 片段
+      6) fallback: "<doc_type> #idx"
+    """
+    hit = hit or {}
+    # 1) 平面鍵
+    flat_keys = ("title", "doc_title", "name", "source_title", "filename", "basename", "path", "url", "id")
+    for k in flat_keys:
+        v = hit.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip(), f"flat.{k}"
+
+    # 2) 巢狀鍵
+    for nk in ("meta", "front", "metadata", "front_matter"):
+        node = hit.get(nk)
+        if isinstance(node, dict):
+            v = node.get("title")
+            if isinstance(v, str) and v.strip():
+                return v.strip(), f"nested.{nk}.title"
+
+    # 3) payload=dict
+    payload = hit.get("payload")
+    if isinstance(payload, dict):
+        v = payload.get("title")
+        if isinstance(v, str) and v.strip():
+            return v.strip(), "payload.title"
+
+    # 4) payload=str (YAML/原文)
+    if isinstance(payload, str) and payload.strip():
+        t = _extract_title_from_yaml_front_matter(payload)
+        if t:
+            return t.strip(), "payload.yaml"
+
+    # 5) content/text 的 YAML front matter
+    content = hit.get("content") or hit.get("text") or ""
+    if isinstance(content, str) and content.strip():
+        t = _extract_title_from_yaml_front_matter(content)
+        if t:
+            return t.strip(), "content.yaml"
+
+    # 6) fallback
+    htype = _type_of(hit)
+    title = default or f"{htype} #{idx+1}"
+    return title, "fallback"
+
+
+def collect_rag_notes(
+    hits: list,
+    max_chars: int = 1200,
+    code_snippet_char_limit: int = 500,
+    debug: bool = False
+) -> str:
+    """
+    收集 RAG 片段：
+      - code_snippet：抽 code fence → 移除所有 imports → 截斷 → 以 ```text 包住
+      - 其他：擷取前 ~400 字的摘要
+      - 標題：用 _best_title (會回傳來源標示)
+      - debug：列出 type、title、title_source、keys、content_len
+    """
+    def _strip_leading_imports(code: str) -> str:
+        kept = []
+        for ln in (code or "").splitlines():
+            if re.match(r"^\s*(import|from)\s+\S+", ln):
+                continue
+            kept.append(ln)
+        return "\n".join(kept).strip()
+
+    notes_parts, titles = [], []
+    used = 0
+
     if debug:
-        types = {}
-        for h in hits:
-            t = (h.get("payload") or {}).get("doc_type") or "?"
-            types[t] = types.get(t, 0) + 1
-        print(f"[DEBUG] RAG hits total: {len(hits)}; type distribution: {types}")
-        print(f"[DEBUG] RAG notes selected: {len(chunks)} blocks; total chars={len(note)}")
-    return note
+        print(f"[DEBUG] RAG hits total: {len(hits or [])}; type distribution: n/a")
+
+    for idx, h in enumerate(hits or []):
+        if used >= max_chars:
+            break
+        h = h or {}
+        htype = _type_of(h)
+        title, title_src = _best_title(h, idx, default=htype)
+        raw_content = h.get("content") or h.get("text") or ""
+
+        # 若 content/text 為空且 payload 是 dict，試著拿 payload.content
+        if (not raw_content) and isinstance(h.get("payload"), dict):
+            raw_content = h["payload"].get("content", "")
+
+        # 確保是字串
+        if not isinstance(raw_content, str):
+            try:
+                raw_content = json.dumps(raw_content, ensure_ascii=False)
+            except Exception:
+                raw_content = str(raw_content)
+
+        if debug:
+            keys_preview = sorted([k for k in h.keys() if isinstance(k, str)])
+            print(f"[DEBUG] RAG pick[{idx}]: type={htype!r}, title={title!r}, title_src={title_src}, keys={keys_preview}, content_len={len(raw_content)}")
+
+        block = ""
+        if htype == "code_snippet":
+            m = re.search(r"```(?:python|py)?\s*\n([\s\S]*?)\n```", raw_content, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"```\s*\n([\s\S]*?)\n```", raw_content, flags=re.IGNORECASE)
+            code = (m.group(1).strip() if m else raw_content.strip())
+
+            code = _strip_leading_imports(code)
+            if not code:
+                if debug:
+                    print(f"[DEBUG] RAG pick[{idx}]: code empty after import stripping → skipped")
+                continue
+            code = code[: min(code_snippet_char_limit, max_chars - used)]
+
+            block = (
+                f"[code_snippet] {title}\n"
+                "EXAMPLE (imports removed — adapt patterns; add only the imports you actually need):\n"
+                "```text\n" + code + "\n```"
+            )
+        else:
+            # 文字摘要
+            excerpt = re.sub(r"\s+", " ", raw_content).strip()
+            if not excerpt:
+                if debug:
+                    print(f"[DEBUG] RAG pick[{idx}]: empty excerpt → skipped")
+                continue
+            excerpt = excerpt[: min(400, max_chars - used)]
+            block = f"[{htype}] {title}\n{excerpt}"
+
+        if not block:
+            continue
+
+        blk_len = len(block)
+        if used + blk_len > max_chars:
+            block = block[: max_chars - used]
+            blk_len = len(block)
+
+        notes_parts.append(block)
+        titles.append(title)
+        used += blk_len
+
+    header = (
+        "[RAG NOTES]\n"
+        "EXAMPLE snippets below have IMPORTS REMOVED on purpose.\n"
+        "They are reference patterns — do NOT copy verbatim.\n"
+        "Add ONLY the imports you actually need when adapting.\n\n"
+    )
+    notes = header + "\n\n".join(notes_parts)
+
+    if debug:
+        print(f"[DEBUG] RAG notes selected: {len(notes_parts)} blocks; total chars={used}; titles={titles}")
+    return notes
 
 # --------------------
 # Non-code prompt
