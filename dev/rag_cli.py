@@ -75,10 +75,14 @@ CONTINUE_HINT  = re.compile(r"繼續|續寫|接著|補完|沒寫完|沒有寫完
 
 # 變數輕量同義詞 cue（白名單約束下才納入）
 VAR_SYNONYMS = [
-    ("sst_anomaly", r"距平|異常|anomal(y|ies)"),
-    ("level",       r"\blevel\b|等級|分級"),
-    ("td",          r"熱位移|thermal\s*displacement"),
-    ("sst",         r"\bsst\b|海溫|海表溫"),
+    # sst_anomaly：僅針對「海表」溫度異常、或明確的 “SST anomaly” 字樣
+    ("sst_anomaly", r"(海表)?溫.*(距平|異常)|\bSST[-_\s]*anom(al(y|ies))?\b"),
+    # level：限定與 MHW/海洋熱浪語境同現，避免一般統計「等級」誤觸
+    ("level",       r"(?:\bMHW\b|海洋?熱浪).*(?:等級|level)|(?:等級|level).*(?:\bMHW\b|海洋?熱浪)"),
+    # td：熱位移
+    ("td",          r"(?:熱位移|thermal\s*displacement)"),
+    # sst：限定為海表溫度（SST），避免一般「海溫/海水溫度」概念混入其他 API（如 subsurface）
+    ("sst",         r"\bSST\b|海表溫|海水表面溫度|海表.*溫度"),
 ]
 
 def extract_user_requested_vars(question: str, allowed: List[str]) -> List[str]:
@@ -118,6 +122,7 @@ def encode_query(text: str) -> List[float]:
 # --------------------
 def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str, Any]]:
     vec = encode_query(question)
+    # 第一次：通用檢索
     resp = qdrant.query_points(
         collection_name=COLLECTION,
         query=vec,
@@ -130,7 +135,7 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     hits = [{"text": get_payload_text(getattr(p, "payload", {}) or {}),
              "payload": getattr(p, "payload", {}) or {}} for p in points]
 
-    # 再補 code/api 偏好（增加候選多樣性）
+    # 第二次：code/api 偏好（保留原結構與回傳格式）
     code_filter = models.Filter(should=[
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_snippet")),
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_example")),
@@ -152,50 +157,146 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     except Exception:
         pass
 
-    # 去重
+    # 去重（保留既有鍵與策略）
     out, seen = [], set()
     for h in hits:
         p = h.get("payload", {}) or {}
         key = p.get("doc_id") or (p.get("title"), p.get("source_file"))
-        if key in seen: continue
+        if key in seen:
+            continue
         seen.add(key)
         out.append(h)
 
-    # 題意加權與過濾
-    ql = question.lower()
-    def boost(p: Dict[str,Any]) -> float:
+    # ------- 只改這裡：score / re-rank / diversify -------
+    ql = (question or "").lower()
+
+    def _norm(s: str) -> str:
+        if not isinstance(s, str):
+            return ""
+        s = s.lower()
+        # 常見重音/變體簡化（避免 "niño" 與 "nino" 錯過）
+        s = s.replace("niño", "nino").replace("ni\u00f1o", "nino")
+        s = s.replace("la niña", "la nina").replace("ni\u00f1a", "nina")
+        return s
+
+    # 信號詞（general, 不做「區域 cues」，只做語意關鍵詞對齊）
+    SIGNAL_TOKENS = [
+        "enso","nino","la nina","el nino",
+        "mhw","marine heatwave","marine heatwaves","海洋熱浪","熱浪",
+        "sst","anomaly","anomalies","距平","異常",
+        "timeseries","time series","時序","趨勢","map","分佈","分布","distribution",
+        "api","openapi","oas","endpoint","append","lon","lat","bbox",
+    ]
+    q_tokens = set(t for t in SIGNAL_TOKENS if _norm(t) in _norm(ql))
+
+    def boost(p: Dict[str,Any], text: str) -> float:
         score = 0.0
         dt = (p.get("doc_type") or "").lower()
-        title = (p.get("title") or "").lower()
-        if dt in ("api_spec","code_snippet","code_example"): score += 1.5
-        if dt == "cli_tool_guide":
-            if re.search(r"\bcli\b|命令列|指令|工具", ql):
-                score += 0.6
-            else:
-                score -= 0.6
-        if ("enso" in title) and not re.search(r"enso|niño|la\s*niña", ql):
-            score -= 0.8
+        title = (p.get("title") or "")
+        tags = p.get("tags") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        faq  = p.get("faq") or []
+
+        # 基礎：doc_type 權重（適度，不壓死 web_article）
+        if dt == "api_spec":
+            score += 1.8
+        elif dt in ("code_snippet","code_example"):
+            score += 1.2
+        elif dt == "web_article":
+            score += 0.5
+        elif dt == "cli_tool_guide":
+            # 若題意不是 CLI，略降
+            if not re.search(r"\bcli\b|命令列|指令|工具", ql):
+                score -= 0.3
+
+        # 標題 / tags / faq 與題意關鍵詞對齊（最多 +2.0）
+        aligned = 0.0
+        t_all = " ".join([str(title), " ".join(map(str, tags)), " ".join(map(str, faq))])
+        nt = _norm(t_all)
+        for tok in q_tokens:
+            if _norm(tok) in nt:
+                aligned += 0.6
+        score += min(aligned, 2.0)
+
+        # 內容前段（前 600 字）弱對齊（最多 +1.0）
+        head = _norm(str(text)[:600])
+        c_aligned = 0.0
+        for tok in q_tokens:
+            if _norm(tok) in head:
+                c_aligned += 0.25
+        score += min(c_aligned, 1.0)
+
+        # API/程式實作的「可用性」微調
+        if dt == "api_spec" and re.search(r"/api/\w+|paths\s*:", _norm(text)):
+            score += 0.3
+        if dt in ("code_snippet","code_example") and "requests.get(" in text:
+            score += 0.3
+
+        # 過度泛化的文章小扣分（避免長篇泛論壓過 code/api）
+        if dt == "web_article" and len(text) > 4000 and not q_tokens:
+            score -= 0.2
+
+        # 輕微新鮮度（有 retrieved_at 就給 +0.1）
+        if p.get("retrieved_at"):
+            score += 0.1
+
         return score
 
-    scored = [(boost(h["payload"]), h) for h in out]
-    scored = [x for x in scored if x[0] >= -0.5]  # 丟掉負分太多的
-    scored.sort(key=lambda x: x[0], reverse=True)
-    reranked = [h for _,h in scored]
+    scored = []
+    for h in out:
+        p = h.get("payload", {}) or {}
+        t = h.get("text", "") or ""
+        scored.append((boost(p, t), h))
 
-    # 輕度多樣化
-    uniq, seen2 = [], set()
+    # 移除分數極低（雜訊）
+    scored = [x for x in scored if x[0] > -0.5]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    reranked = [h for _, h in scored]
+
+    # 輕度多樣化：保證類型覆蓋（api_spec / code_* / web_article），其餘按 reranked 補齊
+    by_type: Dict[str, List[dict]] = {}
     for h in reranked:
-        p = h["payload"]; k = (p.get("doc_type"), p.get("title"))
-        if k in seen2: continue
-        seen2.add(k); uniq.append(h)
-        if len(uniq) >= topk: break
+        dt = (h.get("payload", {}) or {}).get("doc_type", "").lower()
+        by_type.setdefault(dt, []).append(h)
+
+    selected, used_keys = [], set()
+
+    def _push_one(pool_name: str):
+        pool = by_type.get(pool_name, [])
+        for h in pool:
+            p = h.get("payload", {}) or {}
+            key = p.get("doc_id") or (p.get("title"), p.get("source_file"))
+            if key in used_keys:
+                continue
+            selected.append(h)
+            used_keys.add(key)
+            return True
+        return False
+
+    # 先保證核心類型各一
+    _push_one("api_spec")
+    _push_one("code_snippet") or _push_one("code_example")
+    _push_one("web_article")
+
+    # 其餘依 reranked 順序補滿 topk
+    for h in reranked:
+        if len(selected) >= topk:
+            break
+        p = h.get("payload", {}) or {}
+        key = p.get("doc_id") or (p.get("title"), p.get("source_file"))
+        if key in used_keys:
+            continue
+        selected.append(h)
+        used_keys.add(key)
 
     if debug:
         from collections import Counter
-        dist = Counter([(h["payload"].get("doc_type"), h["payload"].get("title")) for h in uniq])
+        dist = Counter([(h["payload"].get("doc_type"), h["payload"].get("title")) for h in selected])
         print(f"[DEBUG] diversified selection: {dict(dist)}")
-        print(f"[DEBUG] total hits(after merge dedupe): {len(out)}, selected: {len(uniq)}")
-    return uniq
+        print(f"[DEBUG] total hits(after merge dedupe): {len(out)}, selected: {len(selected)}")
+
+    return selected
 
 # --------------------
 # OAS parsing / harvest（含快取）
