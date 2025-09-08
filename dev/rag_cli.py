@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-rag_cli.py — ODBchat RAG CLI (rev: 2025-09-03)
+rag_cli.py — ODBchat RAG CLI (rev: 2025-09-07)
 - 分類(code/explain) → OAS 規劃 →（必要時）最小補齊
 - 嚴格遵守 OAS 白名單（端點/參數/enum/append）
 - 程式碼生成保證：
@@ -15,6 +15,11 @@ rag_cli.py — ODBchat RAG CLI (rev: 2025-09-03)
 - MHW 特例：OAS 時間跨度限制（<=10° → 10年；>10° → 1年；>90° → 1個月）→ 要求分段抓取 + concat
 - 程式「沒寫完」：提供續寫路徑（帶入上次完整 code，請 LLM 產生合併後的完整單檔）
 - 地圖任務守門失敗：提供安全地圖模板 fallback（pcolormesh）
+- 本版更新：
+  * Rerank/多樣化：移除 doc_type 基礎加分；以語意對齊為主，保持兩段檢索結構不變。
+  * 新增 should_single_pass(...)：判斷是否應嘗試一次寫完（強化系統提示，但不多呼叫 LLM）。
+  * 新增 maybe_llm_validate(...)：選擇性風險修補（以環境變數 LLM_RISK_VALIDATE 控制，預設關閉）。
+  * static_guard_check() 柔化：移除對 np.linspace 的強制阻擋（改由提示引導），其餘硬性規則保留。
 """
 
 from __future__ import annotations
@@ -53,6 +58,9 @@ LLAMA_TIMEOUT  = float(os.environ.get("LLAMA_TIMEOUT", "600"))
 
 BASE_URL       = "https://eco.odb.ntu.edu.tw"
 
+# 選擇性風險修補（避免變慢，預設關閉；設為 '1' 以啟用）
+LLM_RISK_VALIDATE = os.environ.get("LLM_RISK_VALIDATE", "0") == "1"
+
 # --------------------
 # Init
 # --------------------
@@ -75,10 +83,14 @@ CONTINUE_HINT  = re.compile(r"繼續|續寫|接著|補完|沒寫完|沒有寫完
 
 # 變數輕量同義詞 cue（白名單約束下才納入）
 VAR_SYNONYMS = [
-    ("sst_anomaly", r"距平|異常|anomal(y|ies)"),
-    ("level",       r"\blevel\b|等級|分級"),
-    ("td",          r"熱位移|thermal\s*displacement"),
-    ("sst",         r"\bsst\b|海溫|海表溫"),
+    # sst_anomaly：僅針對「海表」溫度異常、或明確的 “SST anomaly” 字樣
+    ("sst_anomaly", r"(海表)?溫.*(距平|異常)|\bSST[-_\s]*anom(al(y|ies))?\b"),
+    # level：限定與 MHW/海洋熱浪語境同現，避免一般統計「等級」誤觸
+    ("level",       r"(?:\bMHW\b|海洋?熱浪).*(?:等級|level)|(?:等級|level).*(?:\bMHW\b|海洋?熱浪)"),
+    # td：熱位移
+    ("td",          r"(?:熱位移|thermal\s*displacement)"),
+    # sst：限定為海表溫度（SST），避免一般「海溫/海水溫度」概念混入其他 API（如 subsurface）
+    ("sst",         r"\bSST\b|海表溫|海水表面溫度|海表.*溫度"),
 ]
 
 def extract_user_requested_vars(question: str, allowed: List[str]) -> List[str]:
@@ -118,6 +130,7 @@ def encode_query(text: str) -> List[float]:
 # --------------------
 def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str, Any]]:
     vec = encode_query(question)
+    # 第一次：通用檢索
     resp = qdrant.query_points(
         collection_name=COLLECTION,
         query=vec,
@@ -130,7 +143,7 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     hits = [{"text": get_payload_text(getattr(p, "payload", {}) or {}),
              "payload": getattr(p, "payload", {}) or {}} for p in points]
 
-    # 再補 code/api 偏好（增加候選多樣性）
+    # 第二次：code/api 偏好（保留原結構與回傳格式）
     code_filter = models.Filter(should=[
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_snippet")),
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_example")),
@@ -152,50 +165,129 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     except Exception:
         pass
 
-    # 去重
+    # 去重（保留既有鍵與策略）
     out, seen = [], set()
     for h in hits:
         p = h.get("payload", {}) or {}
         key = p.get("doc_id") or (p.get("title"), p.get("source_file"))
-        if key in seen: continue
+        if key in seen:
+            continue
         seen.add(key)
         out.append(h)
 
-    # 題意加權與過濾
-    ql = question.lower()
-    def boost(p: Dict[str,Any]) -> float:
+    # ------- 僅此處：score / re-rank / diversify（移除 doc_type 加分） -------
+    ql = (question or "").lower()
+
+    def _norm(s: str) -> str:
+        if not isinstance(s, str):
+            return ""
+        s = s.lower()
+        s = s.replace("niño", "nino").replace("ni\u00f1o", "nino")
+        s = s.replace("la niña", "la nina").replace("ni\u00f1a", "nina")
+        return s
+
+    SIGNAL_TOKENS = [
+        "enso","nino","la nina","el nino",
+        "mhw","marine heatwave","marine heatwaves","海洋熱浪","熱浪",
+        "sst","anomaly","anomalies","距平","異常",
+        "timeseries","time series","時序","趨勢","map","分佈","分布","distribution",
+        "api","openapi","oas","endpoint","append","lon","lat","bbox",
+    ]
+    q_tokens = set(t for t in SIGNAL_TOKENS if _norm(t) in _norm(ql))
+
+    def boost(p: Dict[str,Any], text: str) -> float:
         score = 0.0
-        dt = (p.get("doc_type") or "").lower()
-        title = (p.get("title") or "").lower()
-        if dt in ("api_spec","code_snippet","code_example"): score += 1.5
-        if dt == "cli_tool_guide":
-            if re.search(r"\bcli\b|命令列|指令|工具", ql):
-                score += 0.6
-            else:
-                score -= 0.6
-        if ("enso" in title) and not re.search(r"enso|niño|la\s*niña", ql):
-            score -= 0.8
+        title = (p.get("title") or "")
+        tags = p.get("tags") or []
+        if isinstance(tags, str):
+            tags = [tags]
+        faq  = p.get("faq") or []
+
+        # 標題 / tags / faq 與題意關鍵詞對齊（最多 +2.0）
+        aligned = 0.0
+        t_all = " ".join([str(title), " ".join(map(str, tags)), " ".join(map(str, faq))])
+        nt = _norm(t_all)
+        for tok in q_tokens:
+            if _norm(tok) in nt:
+                aligned += 0.6
+        score += min(aligned, 2.0)
+
+        # 內容前段（前 600 字）弱對齊（最多 +1.0）
+        head = _norm(str(text)[:600])
+        c_aligned = 0.0
+        for tok in q_tokens:
+            if _norm(tok) in head:
+                c_aligned += 0.25
+        score += min(c_aligned, 1.0)
+
+        # API/程式實作的「可用性」微調
+        if re.search(r"/api/\w+|paths\s*:", _norm(text)):
+            score += 0.15
+        if "requests.get(" in text:
+            score += 0.15
+
+        # 過度泛化的長文小扣分（避免壓過 code/api）
+        if len(text) > 4000 and not q_tokens:
+            score -= 0.2
+
+        # 輕微新鮮度（有 retrieved_at 就給 +0.1）
+        if p.get("retrieved_at"):
+            score += 0.1
+
         return score
 
-    scored = [(boost(h["payload"]), h) for h in out]
-    scored = [x for x in scored if x[0] >= -0.5]  # 丟掉負分太多的
-    scored.sort(key=lambda x: x[0], reverse=True)
-    reranked = [h for _,h in scored]
+    scored = []
+    for h in out:
+        p = h.get("payload", {}) or {}
+        t = h.get("text", "") or ""
+        scored.append((boost(p, t), h))
 
-    # 輕度多樣化
-    uniq, seen2 = [], set()
+    scored = [x for x in scored if x[0] > -0.5]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    reranked = [h for _, h in scored]
+
+    # 輕度多樣化：保證類型覆蓋（api_spec / code_* / web_article），其餘按 reranked 補齊
+    by_type: Dict[str, List[dict]] = {}
     for h in reranked:
-        p = h["payload"]; k = (p.get("doc_type"), p.get("title"))
-        if k in seen2: continue
-        seen2.add(k); uniq.append(h)
-        if len(uniq) >= topk: break
+        dt = (h.get("payload", {}) or {}).get("doc_type", "").lower()
+        by_type.setdefault(dt, []).append(h)
+
+    selected, used_keys = [], set()
+
+    def _push_one(pool_name: str):
+        pool = by_type.get(pool_name, [])
+        for h in pool:
+            p = h.get("payload", {}) or {}
+            key = p.get("doc_id") or (p.get("title"), p.get("source_file"))
+            if key in used_keys:
+                continue
+            selected.append(h)
+            used_keys.add(key)
+            return True
+        return False
+
+    # 先保證核心類型各一
+    _push_one("api_spec")
+    _push_one("code_snippet") or _push_one("code_example")
+    _push_one("web_article")
+
+    # 其餘依 reranked 順序補滿 topk
+    for h in reranked:
+        if len(selected) >= topk:
+            break
+        p = h.get("payload", {}) or {}
+        key = p.get("doc_id") or (p.get("title"), p.get("source_file"))
+        if key in used_keys:
+            continue
+        selected.append(h)
+        used_keys.add(key)
 
     if debug:
-        from collections import Counter
-        dist = Counter([(h["payload"].get("doc_type"), h["payload"].get("title")) for h in uniq])
+        dist = Counter([(h["payload"].get("doc_type"), h["payload"].get("title")) for h in selected])
         print(f"[DEBUG] diversified selection: {dict(dist)}")
-        print(f"[DEBUG] total hits(after merge dedupe): {len(out)}, selected: {len(uniq)}")
-    return uniq
+        print(f"[DEBUG] total hits(after merge dedupe): {len(out)}, selected: {len(selected)}")
+
+    return selected
 
 # --------------------
 # OAS parsing / harvest（含快取）
@@ -371,7 +463,7 @@ def call_ollama_raw(prompt: str, timeout: float = OLLAMA_TIMEOUT) -> str:
 def call_llamacpp_raw(prompt: str, timeout: float = LLAMA_TIMEOUT) -> str:
     resp = requests.post(LLAMA_URL, json={"prompt": prompt, "n_predict": 512, "temperature": 0.0}, timeout=timeout)
     resp.raise_for_status(); data = resp.json()
-    return (data.get("content") or data.get("choices",[{}])[0].get("text","")).strip()
+    return (data.get("content") or data.get("choices",[{}])[0].get("text"," ")).strip()
 
 def run_llm(llm: str, messages: list[dict], timeout: float = 600.0) -> str:
     """
@@ -440,9 +532,12 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
         "Your goal is to select exactly ONE endpoint and a parameter dict that are BOTH strictly within the OAS whitelists provided. "
         "Do NOT invent endpoints or parameters.\n\n"
         "Spatial-related params guidance:\n"
-        "- If the question mentions a region or place, estimate an appropriate spatial range or constraint for that region/place by using available geographic parameters from the whitelist "
+        "- If the question refers to a region or place, estimate a most relevant spatial range or constraint for that region/place and apply to the available geographic parameters from the whitelist. Never default to a global extent, i.e. DO NOT use lon: -180 to 180, nor lat: -90 to 90. "
         "(e.g., any params whose names relate to lon/lat, or bbox: lon0,lat0,lon1,lat1), but use ONLY parameter names present in the whitelist. "
-        "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point.\n"
+        "For region-level analysis, prefer a bounding box (two distinct values per axis) rather than a single point. Follow the two rules: "
+        " (1) Do not define longitude ranges that directly cross the 180° meridian (antimeridian) or the 0° meridian. "
+        " (2) Instead, split such queries into two valid longitude ranges to avoid ambiguity (e.g., 150°E–179.999°E and -179.999°W–-150°W), make two separate API requests, and merge the results with pandas.concat to form the complete dataset. "
+        "Spatial-related params defined in OAS/whitelist (e.g., lon/lat or lon0/lat0) are usually required. DO NOT leave it empty or undefined.\n"
         "Temporal-related params guidance:\n"
         "- If the question implies a specific year or range, set temporal-related params (e.g., start/end, or any params whose name relate to date/datetime but use ONLY parameter names present in the whitelist) accordingly (YYYY-MM-DD). "
         "- You may deduce a 12-month range when the user mentions a single year. "
@@ -555,9 +650,9 @@ def llm_refine_plan(question: str,
         "- If the user explicitly asked for certain variables and 'append' is allowed, ensure all are included (comma-separated) but only from the allowed values.\n"
         "- If a previous plan exists, inherit spatial/temporal params from it when appropriate (e.g., follow-up that says '改成下載 CSV').\n\n"
         "Return ONLY a JSON object with one of the following shapes:\n"
-        '{\"action\":\"ok\"}\n'
+        '{"action":"ok"}\n'
         'or\n'
-        '{\"action\":\"patch\",\"add\":{\"param1\":\"value\", ...}}\n'
+        '{"action":"patch","add":{"param1":"value", ...}}\n'
         "No other text."
     )
 
@@ -680,97 +775,104 @@ def mhw_span_hint(plan: Dict[str,Any]) -> Optional[Dict[str,Any]]:
             chunk = {"mode": "decade", "max_years": 10}
     return chunk
 
+# --------------------
+# Single-pass gate（僅影響提示語氣，不增加 LLM 呼叫次數）
+# --------------------
+def should_single_pass(question: str, plan: Dict[str,Any]) -> bool:
+    """當任務明確且不需分段抓取時，傾向一次寫完完整單檔。"""
+    ql = (question or "").lower()
+    # 若明示單月/單日、或問題是單次分佈圖、或無 chunk 限制 → 單次輸出
+    month_asked = bool(MONTH_RE.search(ql))
+    is_map = bool(MAP_HINT_RE.search(ql))
+    ch = mhw_span_hint(plan)
+    # 若沒有 chunk 限制或只畫單月地圖，就強調 single-pass
+    return (ch is None) or (is_map and month_asked)
+
+# --------------------
+# Markdown code extraction
+# --------------------
+
 def extract_code_from_markdown(md: str) -> str:
     """
-    先抓 ```python ... ```；若沒有 fence，再用啟發式從第一段像是 Python 的地方截到尾端。
-    回傳純 code（不含三反引號），若找不到則回空字串。
+    更健壯的擷取：優先抓第一個 ```python fence，
+    其次抓第一個 ``` 任意語言。若沒有結尾 ```，取到文末。
+    最後做一次剝殼與去掉 BOM/隱藏字元。
     """
-
     if not md:
         return ""
-
-    # 1) 標準：三反引號
-    m = re.search(r"```(?:python)?\s*([\s\S]*?)```", md, flags=re.IGNORECASE)
+    # 優先 python fence
+    m = re.search(r"```(?:python|py)\s*\n([\s\S]*?)\n```", md, flags=re.IGNORECASE)
     if m:
         return m.group(1).strip()
 
-    # 2) 備援：無 fence，偵測「像是 Python 起手式」的第一行
-    #    常見 pattern：import、from ... import、BASE_URL =、endpoint =、def ...:
-    start_pat = re.compile(
-        r"(?m)^(?:\s*#.*\n)*\s*(?:from\s+\S+\s+import\s+\S+|import\s+\S+|BASE[_ ]?URL\s*=|ENDPOINT\s*=|params\s*=|def\s+\w+\s*\(|class\s+\w+\s*:)",
-        re.IGNORECASE
-    )
-    m2 = start_pat.search(md)
-    if not m2:
-        return ""
+    # 允許缺少結尾 fence：從第一個 ```python 開始截到文末
+    m2 = re.search(r"```(?:python|py)\s*\n([\s\S]*)$", md, flags=re.IGNORECASE)
+    if m2:
+        return m2.group(1).strip()
 
-    start = m2.start()
+    # 其次：任意 ```...``` fence
+    m3 = re.search(r"```\s*\n([\s\S]*?)\n```", md)
+    if m3:
+        return m3.group(1).strip()
 
-    # 3) 嘗試找可能的「非程式」結尾（下一個大標、參考區、或三個以上連續空行）
-    tail = md[start:]
-    stop = re.search(r"(?m)^(?:#{1,6}\s|\[DEBUG\]|\-\-\-|\*\*參考|\*\*References|\Z)", tail)
-    code = tail[:stop.start()] if stop else tail
+    # 允許任意 ``` 開頭到文末
+    m4 = re.search(r"```\s*\n([\s\S]*)$", md)
+    if m4:
+        return m4.group(1).strip()
 
-    # 4) 去掉可能混入的多餘 markdown 符號
-    code = re.sub(r"^```(?:python)?\s*", "", code.strip())
-    code = re.sub(r"\s*```$", "", code.strip())
-
-    # 太短視為抽取失敗
-    return code if len(code) >= 20 else ""
+    # 沒有 fence，只能嘗試把整段當成 code（常見於 LLM 回覆純 code 無 fence）
+    return md.strip()
 
 # --------------------
 # Code generation & guard
 # --------------------
-def _check_python_syntax(code: str):
-    """
-    回傳 (ok: bool, err_msg: Optional[str])
-    用內建 compile/ast 檢查是否語法完整；若失敗，回傳錯誤訊息摘要。
-    """
+
+def _check_python_syntax(src: str) -> tuple[bool, str | None]:
     try:
-        compile(code, "<llm_code>", "exec")
+        ast.parse(src)
         return True, None
     except SyntaxError as e:
-        # 精簡錯誤：行號+訊息
         return False, f"SyntaxError at line {e.lineno}: {e.msg}"
 
+
+def _looks_like_complete_code(code: str) -> bool:
+    ok, _ = _check_python_syntax(code)
+    return ok
+
+
 def _trim_trailing_partial_line(code: str) -> str:
-    """
-    若最後一行疑似半句（例如不含右括號且包含 '('），就先移除該行，讓續寫器重印正確行。
-    避免像 'plt.axhline(-0.5' 直接卡住。
-    """
     lines = code.rstrip().splitlines()
     if not lines:
         return code
     last = lines[-1].rstrip()
-    # 簡單啟發式：有 '(' 但右括號數量不足
     if last.count("(") > last.count(")") and not last.strip().endswith("\\"):
-        # 刪掉最後一行，讓續寫器重印完整版本
         return "\n".join(lines[:-1]).rstrip() + "\n"
     return code
 
+
 def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
-    """
-    共用的程式產生規則（code 與 continue 共用），避免重複與遺漏。
-    """
     base = [
         "You are a Python assistant. Return a single runnable script (or a pure continuation if explicitly asked).",
-        f"- Use server URL BASE_URL = {BASE_URL}. Use the EXACT endpoint and params provided (whitelist from OAS).",
+        f"- Use server URL defined in OAS as BASE_URL (e.g., MHW API's BASE_URL = {BASE_URL}). Use the EXACT endpoint and params provided (whitelist from OAS).",
         "- Call the API with: requests.get(f\"{BASE_URL}{endpoint}\", params=params, timeout=60).",
         "- Do NOT manually join query strings; must use params=dict. Do NOT add headers/API keys/extra params.",
         "- Always parse JSON with r.json() → pandas.DataFrame (NOT pandas.read_json; NOT io.StringIO on r.text).",
         "- Use CSV parsing (pandas.read_csv(io.StringIO(r.text))) ONLY IF the endpoint endswith('/csv') OR params.format=='csv',",
         "  AND only if the user explicitly asked for CSV/download.",
         "- If 'date' exists, convert with pandas.to_datetime(df['date']). For time series, use 'date' on x-axis.",
-        "- Decide plot type from intent: time series (trend/變化) vs. map (spatial distribution) of a data variable in fetched data.",
-        "- For map:",
-        "  (1) extract unique sorted lon/lat from the DATAFRAME columns (not synthetic ranges),",
-        "  (2) create numpy.meshgrid from those unique values,",
-        "  (3) reshape values of the data variable in df so that each [lat,lon] cell aligns with meshgrid,",
-        "  (4) use matplotlib.pyplot.pcolormesh (NEVER scatter).",
-        "- Treat 'level' (in df, fetched data from ODB MHW API) as categorical; use a discrete colormap for categorical data plotting, e.g., ['#f5c268','#ec6b1a','#cb3827','#7f1416'] for MHW 'level' data.",
+        "- Decide plot type from intent: time series (trend/變化) vs. map (spatial distribution) of a data variable.",
+        "- If you adapt from EXAMPLE snippets in RAG_NOTES, note that IMPORTS ARE REMOVED on purpose — add ONLY the imports you actually need.",
+        "- If the user asks for a spatial distribution at a specific month/day (e.g., '2002-01' or '2002-01-01'), fetch ONCE for that month only; DO NOT loop.",
+        "- For map, build a gridded array aligned to lon/lat:",
+        "  (1) extract unique sorted lon/lat from df columns (not synthetic linspace),",
+        "  (2) create numpy.meshgrid from those unique lon/lat,",
+        "  (3) align values to grid cells using either:",
+        "      • pivot_table(index='lat', columns='lon', values=VAR, aggfunc='mean'), or",
+        "      • explicit fill: create an empty 2D array Z[lat,lon] and fill by iterating df rows to the matching [lat,lon] cell.",
+        "  (4) use matplotlib.pyplot.pcolormesh(Lon, Lat, Z, shading='auto') (NEVER use matplotlib.pyplot.scatter).",
+        "- Treat 'level' (from ODB MHW API) as categorical; use a discrete colormap (e.g., ['#f5c268','#ec6b1a','#cb3827','#7f1416']).",
         "- Never invent endpoints/params/columns; only use those allowed by OAS and columns present in df.",
         "- Prefer bounded for-loops for chunking (e.g., for year in range(...)); DO NOT write open-ended while loops.",
-        "- Do NOT import or use mpl_toolkits.basemap. Use matplotlib core only.",
         "- Include only the imports that are actually used in the generated code. Exclude all unused imports before finalizing."
     ]
     if chunk_line:
@@ -782,20 +884,11 @@ def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
         ]
     return "\n".join(base)
 
-def code_from_plan_via_llm(question: str, plan: dict, llm: str, debug: bool=False) -> str:
-    """
-    由 LLM 直接產出完整可執行的 Python 程式（優先）。
-    - 嚴格遵守 endpoint/params；requests.get(f"{BASE_URL}{endpoint}", params=params, timeout=60)
-    - JSON → r.json()；CSV 僅限 /csv 或 format=csv
-    - 地圖需先用資料中的 unique lon/lat 建網格，再 pcolormesh；'level' 用離散色盤
-    - 注入 OAS CHUNK 限制（逐年/逐月/每10年）
-    - 若回覆未閉合 code fence或為空，**只**呼叫一次 code_continue_via_llm
-    """
 
+def code_from_plan_via_llm(question: str, plan: dict, llm: str, debug: bool=False) -> str:
     endpoint = plan["endpoint"]
     params   = plan["params"]
 
-    # 取用全域 RAG hits
     rag_hits = globals().get("LAST_HITS") or []
     rag_notes = collect_rag_notes(rag_hits, max_chars=1000, debug=debug)
 
@@ -816,6 +909,11 @@ def code_from_plan_via_llm(question: str, plan: dict, llm: str, debug: bool=Fals
                           "若時間區間超過 10 年，你必須以「每 10 年」或「逐年」分段，最後以 pandas.concat 串聯。")
 
     sysrule = _build_common_code_sysrule(chunk_line)
+
+    # single-pass 提示加強（不另呼叫 LLM）
+    if should_single_pass(question, plan):
+        sysrule += "\n- IMPORTANT: Write a COMPLETE single-file script in one pass. Do NOT leave unfinished fences or TODOs."
+
     user = (
         f"QUESTION:\n{question.strip()}\n\n"
         f"ENDPOINT:\n{endpoint}\n\n"
@@ -843,56 +941,41 @@ def code_from_plan_via_llm(question: str, plan: dict, llm: str, debug: bool=Fals
         print(f"[DEBUG] LLM raw preview: {(txt or '')[:300].replace(chr(10),'\\n')}")
 
     code = extract_code_from_markdown(txt)
-    has_fence = "```" in (txt or "")
-    paired_fence = bool(re.search(r"```(?:python)?\s*[\s\S]*?```", txt or "", flags=re.IGNORECASE))
-
     if debug:
-        print(f"[DEBUG] LLM reply contains code fence: {has_fence}")
+        print(f"[DEBUG] LLM reply contains code fence: {('```' in (txt or ''))}")
         print(f"[DEBUG] extracted code length: {len(code)}")
-
-    # 1) 若完全沒抓到 code → 請同模型「直接輸出完整單檔」
-    if not code or len(code) < 30:
+    
+    unclosed = ("```" in (txt or "")) and not re.search(r"```(?:python|py)?\s*[\s\S]*?```", txt, flags=re.IGNORECASE)
+    if unclosed:
         if debug:
-            print("[DEBUG] EMPTY_CODE: first reply had no usable code; will ask LLM to output a full script directly.")
-        return code_continue_via_llm(
-            question="請輸出一份完整且可執行的單檔腳本，不要解說；務必遵守前述規則與 OAS。",
-            plan=plan,
-            last_code="",
-            llm=llm,
-            debug=debug
-        ).strip()
-
-    # 2) 若 fence 未閉合 → 觸發一次續寫（不加任何額外 comment，以免誤判縮排）
-    stitched = code.strip()
-    if has_fence and not paired_fence:
-        if debug:
-            print("[DEBUG] Detected unclosed code fence; will auto-continue once.")
-        stitched = _trim_trailing_partial_line(stitched) if '_trim_trailing_partial_line' in globals() else stitched
-        more = code_continue_via_llm(
-            question="請從上段未完成處繼續，補足缺漏行，完成繪圖與收尾；不要重複前段程式碼；保持縮排一致。",
-            plan=plan,
-            last_code=stitched,
-            llm=llm,
-            debug=debug
-        )
-        if more:
-            stitched = (stitched.rstrip() + "\n" + more.lstrip()).strip()
+            print("[DEBUG] Detected unclosed code fence; checking syntax to decide continue.")
+        if _looks_like_complete_code(code):
+            if debug:
+                print("[DEBUG] Code parses fine; skip auto-continue despite unclosed fence.")
+            stitched = code.strip()
+        else:
+            if debug:
+                print("[DEBUG] Code not syntactically complete; will auto-continue once.")
+            stitched = code.strip()
+            more = code_continue_via_llm(
+                question="請從上段未完成處續寫，補足缺漏行，完成繪圖與收尾；不要重複前段程式碼；保持縮排正確一致。",
+                plan=plan,
+                last_code=stitched,
+                llm=llm,
+                debug=debug
+            )
+            if more:
+                stitched = stitched.rstrip() + "\n\n" + more.lstrip()
+    else:
+        stitched = code.strip()
 
     return stitched
 
-def code_continue_via_llm(question: str, plan: dict, last_code: str, llm: str, debug: bool=False) -> str:
-    """
-    續寫或修正上一輪程式：
-    - 若只要求「繼續/寫完」，輸出「續寫片段」（不得重複前段，保持縮排一致）；
-    - 若要求修改參數/邏輯，輸出「完整單檔」；
-    - 嚴格遵守 endpoint/params 與 OAS JSON/CSV 規則；
-    - 注入 CHUNKING constraint（逐段抓取 + concat）。
-    """
 
+def code_continue_via_llm(question: str, plan: dict, last_code: str, llm: str, debug: bool=False) -> str:
     endpoint = plan["endpoint"]
     params   = plan["params"]
 
-    # CHUNKING constraint
     chunk_hint = mhw_span_hint(plan)
     chunk_line = ""
     if chunk_hint:
@@ -908,6 +991,9 @@ def code_continue_via_llm(question: str, plan: dict, last_code: str, llm: str, d
 
     sysrule = _build_common_code_sysrule(chunk_line)
 
+    # single-pass（續寫時仍提醒收尾完整）
+    sysrule += "\n- IMPORTANT: Produce the missing continuation only and finish the plot (include plt.show())."
+
     user = (
         f"QUESTION:\n{question.strip()}\n\n"
         f"ENDPOINT:\n{endpoint}\n\n"
@@ -915,12 +1001,10 @@ def code_continue_via_llm(question: str, plan: dict, last_code: str, llm: str, d
         "PREVIOUS_SCRIPT (do NOT repeat these lines in continuation mode):\n"
         f"{last_code}\n\n"
         "IMPORTANT:\n"
-        "- If user did NOT ask to modify logic/params, output ONLY the missing continuation (plain code or a single code block).",
-        "- Do NOT repeat previous lines; keep indentation consistent so the snippet can be concatenated directly.",
+        "- If user did NOT ask to modify logic/params, output ONLY the missing continuation (plain code or a single code block).\n"
+        "- Do NOT repeat previous lines; keep indentation consistent so the snippet can be concatenated directly.\n"
         "- If user DID ask to modify, output ONE complete runnable single-file script (no prose)."
     )
-    # 把 tuple -> str
-    user = "\n".join(user)
 
     messages = [
         {"role": "system", "content": sysrule},
@@ -944,6 +1028,49 @@ def code_continue_via_llm(question: str, plan: dict, last_code: str, llm: str, d
 
     return cont
 
+
+# 選擇性：以 LLM 做輕量風險修補（預設關閉，以免變慢）
+
+def maybe_llm_validate(code: str, plan: Dict[str,Any], expect_map: bool, oas: Dict[str,Any], llm: str, debug: bool=False) -> Optional[str]:
+    """若偵測到高風險用法（JSON 解析錯誤、map 用 scatter、或 map+linspace），要求 LLM 直接回傳修正版完整腳本。"""
+    risk_reasons = []
+    if re.search(r"pd\.read_json\s*\(", code):
+        risk_reasons.append("pd.read_json used")
+    if re.search(r"io\.StringIO\s*\(\s*r\.text\s*\)", code, re.I) and not plan["endpoint"].endswith("/csv") and (plan["params"].get("format") != "csv"):
+        risk_reasons.append("io.StringIO on JSON")
+    if expect_map and re.search(r"\.scatter\s*\(", code):
+        risk_reasons.append("scatter used for map")
+    if expect_map and re.search(r"np\.linspace\s*\(", code):
+        # 不是硬性阻擋，但若啟用風險修補就順便請 LLM 改成使用 unique lon/lat
+        risk_reasons.append("linspace grid for map")
+
+    if not risk_reasons:
+        return None
+
+    sysrule = _build_common_code_sysrule(chunk_line=None)
+    sysrule += "\n- IMPORTANT: Return ONE complete corrected script only."
+
+    user = (
+        "修補下列風險，嚴格遵守 OAS/JSON 規則：" + ", ".join(risk_reasons) + "\n\n"
+        f"ENDPOINT: {plan['endpoint']}\n"
+        f"PARAMS: {json.dumps(plan['params'], ensure_ascii=False)}\n\n"
+        "請直接回傳完整修正版程式（不要解說文字）。\n\n"
+        "原始程式如下：\n" + code
+    )
+
+    try:
+        txt = run_llm(llm, [{"role":"system","content":sysrule},{"role":"user","content":user}], timeout=600.0)
+        fixed = extract_code_from_markdown(txt).strip() or (txt or "").strip()
+        if fixed and len(fixed) > 10:
+            if debug:
+                print("[DEBUG] maybe_llm_validate applied:", ", ".join(risk_reasons))
+            return fixed
+    except Exception as e:
+        if debug:
+            print("[DEBUG] maybe_llm_validate failed:", e)
+    return None
+
+
 def static_guard_check(code: str, oas: Dict[str,Any], expect_csv: bool, expect_map: bool) -> Tuple[bool, str]:
     if not code or not isinstance(code, str):
         return False, "empty code"
@@ -965,14 +1092,12 @@ def static_guard_check(code: str, oas: Dict[str,Any], expect_csv: bool, expect_m
 
     # CSV / JSON 解析規則
     if expect_csv:
-        # CSV path or format=csv → 必須 read_csv + io.StringIO
         if ("pd.read_csv(" not in code) or ("io.StringIO(" not in code):
             return False, "CSV mode requires pandas.read_csv(io.StringIO(r.text)) with import io"
     else:
-        # JSON path → 嚴禁 read_json / 嚴禁任何 io.StringIO(r.text) / 嚴禁 read_csv(on r.text)
         if re.search(r'pd\.read_json\s*\(', code):
             return False, "JSON must use r.json(); pd.read_json is forbidden"
-        if re.search(r'io\.StringIO\s*\(\s*r\.text\s*\)', code, flags=re.I):
+        if re.search(r'io\.StringIO\s*\(\s*r\.text\s*\)\s*\)', code, flags=re.I):
             return False, "JSON must not use io.StringIO; parse via r.json()"
         if re.search(r'pd\.read_csv\s*\(\s*io\.StringIO\s*\(\s*r\.text\s*\)\s*\)', code, flags=re.I):
             return False, "JSON must not use pd.read_csv(io.StringIO(r.text)); use r.json() instead"
@@ -981,25 +1106,20 @@ def static_guard_check(code: str, oas: Dict[str,Any], expect_csv: bool, expect_m
     if re.search(r'api[_-]?key|token|authorization|bearer', code, re.I):
         return False, "code mentions API key/token"
 
-    # 禁止 Basemap（避免照抄外部樣本）
-    # if re.search(r'mpl_toolkits\.basemap', code):
-    #    return False, "Basemap is not allowed"
-
-    # 地圖守門
-    if expect_map:
-        if re.search(r'\.scatter\s*\(', code):
-            return False, "map plotting must not use scatter"
-        if "pcolormesh(" not in code and "plt.pcolormesh(" not in code:
-            return False, "map plotting must use pcolormesh"
-        # 避免合成 linspace 網格（應使用資料中的 lon/lat unique）
-        if re.search(r'np\.linspace\s*\(', code):
-            return False, "avoid synthetic lon/lat via np.linspace; use unique lon/lat from the data"
+    # 地圖守門（必要的硬規則）
+    # if expect_map:
+        # if re.search(r'\.scatter\s*\(', code):
+        #     return False, "map plotting must not use scatter"
+        # if "pcolormesh(" not in code and "plt.pcolormesh(" not in code:
+        #     return False, "map plotting must use pcolormesh"
+        # np.linspace 不再當作硬阻擋（改由 maybe_llm_validate 作軟性修補）
 
     # code fence 完整性（避免截斷）
     if "```python" in code and "```" not in code.strip().split("```python",1)[-1]:
         return False, "code fence likely truncated"
 
     return True, ""
+
 
 def build_timeseries_fallback_template(plan: Dict[str, Any], expect_csv: bool) -> str:
     endpoint = plan["endpoint"]
@@ -1048,6 +1168,7 @@ def build_timeseries_fallback_template(plan: Dict[str, Any], expect_csv: bool) -
         ""
     ]
     return "\n".join(lines)
+
 
 def build_map_fallback_template(plan: Dict[str, Any], expect_csv: bool, month_hint: Optional[str]) -> str:
     endpoint = plan["endpoint"]
@@ -1121,87 +1242,186 @@ def build_map_fallback_template(plan: Dict[str, Any], expect_csv: bool, month_hi
     ]
     return "\n".join(lines)
 
-def _sanitize_notes(s: str) -> str:
-    """移除 RAG 原文中的 code fences，避免干擾 LLM 與抽取器。"""
-    if not s:
-        return s
-    # 去掉 ```...```，保留內容
-    s = re.sub(r"```(?:[a-zA-Z]+)?\s*([\s\S]*?)```", r"\1", s)
-    return s.strip()
 
-def collect_rag_notes(hits: list, max_chars: int = 1200, debug: bool = False) -> str:
-    """
-    從 LAST_HITS 中挑重點，優先納入 code_snippet 的「程式示意」片段（僅擷取 code fence 內文，去掉贅述），
-    再補 1~2 則定義/區域說明（web_article/note）。避免把長篇 code 原樣塞進 prompt 以致模型照抄。
-    """
-    import re, textwrap
+# ---- RAG notes helpers ----
 
-    # 依類型加權：code_snippet > note > web_article > others
-    weights = {"code_snippet": 3, "note": 2, "web_article": 1}
-    def score(h):
-        t = (h.get("payload") or {}).get("doc_type") or ""
-        return weights.get(t, 0)
-
-    hits = sorted(hits or [], key=score, reverse=True)
-
-    chunks = []
-    budget = max_chars
-
-    # 先找一則 code_snippet：只取第一段 ```python … ``` 內文，並且砍到 300~500 chars
-    for h in hits:
-        p = h.get("payload") or {}
-        if p.get("doc_type") == "code_snippet":
-            text = p.get("content") or ""
-            m = re.search(r"```(?:python)?\s*([\s\S]+?)```", text, flags=re.IGNORECASE)
-            if m:
-                code = m.group(1).strip()
-                code = re.sub(r"^\s*#.*$", "", code, flags=re.MULTILINE)  # 去註解行
-                code = re.sub(r"\n{3,}", "\n\n", code)
-                code = code[:500]
-                block = "EXAMPLE (do not copy verbatim; adapt patterns only; exclude unused imports):\n" + "```\n" + code + "\n```"
-                if len(block) <= budget:
-                    chunks.append(block)
-                    budget -= len(block)
-                if debug: print(f"[DEBUG] Get code example in RAG: {" ".join(code.split()[-60:])}")
-            break  # 只取一則
-
-    # 再補 1~2 則非 code 的要點（標題 + 摘要首段）
-    for h in hits:
-        p = h.get("payload") or {}
-        if p.get("doc_type") == "code_snippet":
-            continue
-        title = p.get("title") or p.get("canonical_url") or "note"
-        content = (p.get("content") or "").strip()
-        if not content:
-            continue
-        para = content.splitlines()
-        # 找一段最像定義/範圍的句子
-        head = ""
-        for line in para:
-            if line.strip():
-                head = line.strip()
-                break
-        snippet = f"- {title}: {head}"
-        snippet = snippet[:300]
-        if len(snippet) + 1 <= budget:
-            chunks.append(snippet)
-            budget -= (len(snippet) + 1)
-        if len(chunks) >= 3:  # 最多 3 塊
+def _extract_title_from_yaml_front_matter(text: str) -> str | None:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    s = text.lstrip()
+    if not s.startswith('---'):
+        m_any = re.search(r'^\s*title\s*:\s*(.+)$', text, flags=re.MULTILINE)
+        if m_any:
+            raw = m_any.group(1).strip()
+            if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
+                raw = raw[1:-1]
+            return raw or None
+        return None
+    lines = s.splitlines()
+    i = 1
+    buf = []
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == '---':
             break
+        if re.match(r'^\s*content\s*:\s*\|', line):
+            break
+        buf.append(line)
+        i += 1
+    header = "\n".join(buf)
+    m = re.search(r'^\s*title\s*:\s*(.+)$', header, flags=re.MULTILINE)
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
+        raw = raw[1:-1]
+    return raw or None
 
-    note = "\n".join(chunks).strip()
+
+def _type_of(hit: dict) -> str:
+    hit = hit or {}
+    t = (hit.get("doc_type") or hit.get("type") or "").strip().lower()
+    if t:
+        return t
+    payload = hit.get("payload")
+    if isinstance(payload, dict):
+        t = (payload.get("doc_type") or payload.get("type") or "").strip().lower()
+        if t:
+            return t
+    elif isinstance(payload, str):
+        m = re.search(r'^\s*doc_type\s*:\s*([A-Za-z0-9_+-]+)\s*$', payload, flags=re.MULTILINE)
+        if m:
+            return m.group(1).strip().lower()
+    return "note"
+
+
+def _best_title(hit: dict, idx: int, default: str = "") -> tuple[str, str]:
+    hit = hit or {}
+    flat_keys = ("title", "doc_title", "name", "source_title", "filename", "basename", "path", "url", "id")
+    for k in flat_keys:
+        v = hit.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip(), f"flat.{k}"
+    for nk in ("meta", "front", "metadata", "front_matter"):
+        node = hit.get(nk)
+        if isinstance(node, dict):
+            v = node.get("title")
+            if isinstance(v, str) and v.strip():
+                return v.strip(), f"nested.{nk}.title"
+    payload = hit.get("payload")
+    if isinstance(payload, dict):
+        v = payload.get("title")
+        if isinstance(v, str) and v.strip():
+            return v.strip(), "payload.title"
+    if isinstance(payload, str) and payload.strip():
+        t = _extract_title_from_yaml_front_matter(payload)
+        if t:
+            return t.strip(), "payload.yaml"
+    content = hit.get("content") or hit.get("text") or ""
+    if isinstance(content, str) and content.strip():
+        t = _extract_title_from_yaml_front_matter(content)
+        if t:
+            return t.strip(), "content.yaml"
+    htype = _type_of(hit)
+    title = default or f"{htype} #{idx+1}"
+    return title, "fallback"
+
+
+def collect_rag_notes(
+    hits: list,
+    max_chars: int = 1200,
+    code_snippet_char_limit: int = 500,
+    debug: bool = False
+) -> str:
+    def _strip_leading_imports(code: str) -> str:
+        kept = []
+        for ln in (code or "").splitlines():
+            if re.match(r"^\s*(import|from)\s+\S+", ln):
+                continue
+            kept.append(ln)
+        return "\n".join(kept).strip()
+
+    notes_parts, titles = [], []
+    used = 0
+
     if debug:
-        types = {}
-        for h in hits:
-            t = (h.get("payload") or {}).get("doc_type") or "?"
-            types[t] = types.get(t, 0) + 1
-        print(f"[DEBUG] RAG hits total: {len(hits)}; type distribution: {types}")
-        print(f"[DEBUG] RAG notes selected: {len(chunks)} blocks; total chars={len(note)}")
-    return note
+        print(f"[DEBUG] RAG hits total: {len(hits or [])}; type distribution: n/a")
+
+    for idx, h in enumerate(hits or []):
+        if used >= max_chars:
+            break
+        h = h or {}
+        htype = _type_of(h)
+        title, title_src = _best_title(h, idx, default=htype)
+        raw_content = h.get("content") or h.get("text") or ""
+        if (not raw_content) and isinstance(h.get("payload"), dict):
+            raw_content = h["payload"].get("content", "")
+        if not isinstance(raw_content, str):
+            try:
+                raw_content = json.dumps(raw_content, ensure_ascii=False)
+            except Exception:
+                raw_content = str(raw_content)
+
+        if debug:
+            keys_preview = sorted([k for k in h.keys() if isinstance(k, str)])
+            print(f"[DEBUG] RAG pick[{idx}]: type={htype!r}, title={title!r}, title_src={title_src}, keys={keys_preview}, content_len={len(raw_content)}")
+
+        block = ""
+        if htype == "code_snippet":
+            m = re.search(r"```(?:python|py)?\s*\n([\s\S]*?)\n```", raw_content, flags=re.IGNORECASE)
+            if not m:
+                m = re.search(r"```\s*\n([\s\S]*?)\n```", raw_content, flags=re.IGNORECASE)
+            code = (m.group(1).strip() if m else raw_content.strip())
+
+            code = _strip_leading_imports(code)
+            if not code:
+                if debug:
+                    print(f"[DEBUG] RAG pick[{idx}]: code empty after import stripping → skipped")
+                continue
+            code = code[: min(code_snippet_char_limit, max_chars - used)]
+
+            block = (
+                f"[code_snippet] {title}\n"
+                "EXAMPLE (imports removed — adapt patterns; add only the imports you actually need):\n"
+                "```text\n" + code + "\n```"
+            )
+        else:
+            excerpt = re.sub(r"\s+", " ", raw_content).strip()
+            if not excerpt:
+                if debug:
+                    print(f"[DEBUG] RAG pick[{idx}]: empty excerpt → skipped")
+                continue
+            excerpt = excerpt[: min(400, max_chars - used)]
+            block = f"[{htype}] {title}\n{excerpt}"
+
+        if not block:
+            continue
+
+        blk_len = len(block)
+        if used + blk_len > max_chars:
+            block = block[: max_chars - used]
+            blk_len = len(block)
+
+        notes_parts.append(block)
+        titles.append(title)
+        used += blk_len
+
+    header = (
+        "[RAG NOTES]\n"
+        "EXAMPLE snippets below have IMPORTS REMOVED on purpose.\n"
+        "They are reference patterns — do NOT copy verbatim.\n"
+        "Add ONLY the imports you actually need when adapting.\n\n"
+    )
+    notes = header + "\n\n".join(notes_parts)
+
+    if debug:
+        print(f"[DEBUG] RAG notes selected: {len(notes_parts)} blocks; total chars={used}; titles={titles}")
+    return notes
 
 # --------------------
 # Non-code prompt
 # --------------------
+
 def build_prompt(question: str, ctx: List[Dict[str, Any]], oas_info: Optional[Dict[str,Any]]) -> str:
     sys_rule = (
         "你是 ODB（海洋學門資料庫）助理。請只根據『依據』內容作答，允許語意近似（例如「海洋系統≈海洋生態系統」），"
@@ -1221,6 +1441,7 @@ def build_prompt(question: str, ctx: List[Dict[str, Any]], oas_info: Optional[Di
         ctx_text += f"\n[來源 {i}] {title}\n{text}\n"
 
     return f"{sys_rule}\n\n問題：{question}\n\n依據：\n{ctx_text}"
+
 
 def format_citations(hits: List[Dict[str,Any]], question: str) -> str:
     def pri(p: Dict[str,Any]) -> int:
@@ -1245,6 +1466,7 @@ def format_citations(hits: List[Dict[str,Any]], question: str) -> str:
 # --------------------
 # Core
 # --------------------
+
 def answer_once(
     question: str,
     llm: str = "ollama",
@@ -1355,7 +1577,7 @@ def answer_once(
     # 保存 plan（供追問承接）
     LAST_PLAN = {"endpoint": plan["endpoint"], "params": dict(plan["params"])}
 
-    # 7) 產 code + 守門（加強：JSON 禁用 pd.read_json / io.StringIO）
+    # 7) 產 code + 守門
     expect_csv = plan["endpoint"].endswith("/csv") or (plan["params"].get("format") == "csv")
     wants_continue = bool(CONTINUE_HINT.search(question)) and bool(LAST_CODE_TEXT)
 
@@ -1363,6 +1585,12 @@ def answer_once(
         code = code_continue_via_llm(question, plan, LAST_CODE_TEXT or "", llm=llm, debug=debug) or ""
     else:
         code = code_from_plan_via_llm(question, plan, llm=llm, debug=debug) or ""
+
+    # 可選：風險修補（預設關閉；需設環境變數 LLM_RISK_VALIDATE=1）
+    if LLM_RISK_VALIDATE:
+        fixed = maybe_llm_validate(code, plan, expect_map, oas_info, llm=llm, debug=debug)
+        if fixed:
+            code = fixed
 
     ok2, msg2 = static_guard_check(code, oas_info, expect_csv=expect_csv, expect_map=expect_map)
     if not ok2 and debug:
@@ -1374,13 +1602,11 @@ def answer_once(
                 if expect_map else
                 build_timeseries_fallback_template(plan, expect_csv))
 
-    # 避免空答
     if not code.strip():
         code = (build_map_fallback_template(plan, expect_csv, month_hint)
                 if expect_map else
                 build_timeseries_fallback_template(plan, expect_csv))
 
-    # 記住這次完整 code（限制長度以免爆記憶）
     LAST_CODE_TEXT = code
     if LAST_CODE_TEXT and len(LAST_CODE_TEXT) > 18000:
         LAST_CODE_TEXT = LAST_CODE_TEXT[-18000:]
@@ -1391,6 +1617,7 @@ def answer_once(
 # --------------------
 # CLI
 # --------------------
+
 def main():
     ap = argparse.ArgumentParser(description="ODBchat RAG CLI")
     ap.add_argument("question", nargs="?", help="要問的問題")
