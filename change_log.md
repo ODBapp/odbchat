@@ -21,3 +21,4 @@
     - deprecate second_try LLM to reduce response time, need tuned/n3
 	- small fix for more accurate code rag extract, remove imports/n4, small fix: scoring and rerank for qdrant/n5
 #### v0.2.1 A new scoring-rerank-diversify way for qdrant and try to improve first-round answer/n1
+#### v0.2.2 A new One-pass LLM structure try to reduce response time/n1
