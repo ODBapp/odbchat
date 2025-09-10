@@ -23,3 +23,4 @@
 #### v0.2.1 A new scoring-rerank-diversify way for qdrant and try to improve first-round answer/n1
 #### v0.2.2 A new One-pass LLM structure try to reduce response time/n1
     - try to improve code/explain mode in one-pass LLM structure, need tuned/n2 
+    - improve sharing sysrules module for one-pass LLM, need tuned/n3

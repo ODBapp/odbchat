@@ -17,23 +17,20 @@ rag_cli.py — ODBchat RAG CLI (rev: 2025-09-07)
 - 地圖任務守門失敗：提供安全地圖模板 fallback（pcolormesh）
 - 本版更新：
   * Rerank/多樣化：移除 doc_type 基礎加分；以語意對齊為主，保持兩段檢索結構不變。
-  * 新增 should_single_pass(...)：判斷是否應嘗試一次寫完（強化系統提示，但不多呼叫 LLM）。
-  * 新增 maybe_llm_validate(...)：選擇性風險修補（以環境變數 LLM_RISK_VALIDATE 控制，預設關閉）。
   * static_guard_check() 柔化：移除對 np.linspace 的強制阻擋（改由提示引導），其餘硬性規則保留。
 """
 
 from __future__ import annotations
 
-import os, re, sys, json, argparse, warnings, ast
+import os, re, json, argparse, warnings, ast
 from typing import Any, Dict, List, Tuple, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import Counter
-
-warnings.filterwarnings("ignore", category=UserWarning, module="torch.cuda")
-
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 import requests
+
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.cuda")
 
 try:
     import yaml
@@ -72,6 +69,13 @@ LAST_PLAN: Optional[Dict[str,Any]] = None
 OAS_CACHE: Optional[Dict[str,Any]] = None
 LAST_CODE_TEXT: Optional[str] = None  # 用於「續寫/補完」情境
 
+# --- OAS fallback cache (only used if a function wasn't passed `oas`) ---
+def _set_oas_cache(oas: dict | None) -> None:
+    globals()["_OAS_CACHE"] = (oas or {}).copy()
+
+def _get_oas_cache() -> dict:
+    return (globals().get("_OAS_CACHE") or {}).copy()
+
 # --------------------
 # Intent hints
 # --------------------
@@ -93,17 +97,155 @@ VAR_SYNONYMS = [
     ("sst",         r"\bSST\b|海表溫|海水表面溫度|海表.*溫度"),
 ]
 
+# ---- Common regex & helpers (shared by one-pass & multi-steps) ----
+CODE_FENCE_RE = re.compile(r"```(?:python|py)?\s*[\s\S]*?```", flags=re.IGNORECASE)
+ONE_PASS_MARKER_RE = re.compile(r'<<<[^>]+>>>', flags=re.IGNORECASE)
+EXPLAIN_TOKEN_RE   = re.compile(r'\{+\s*explain\s*\}+', flags=re.IGNORECASE)
+# CODE_LIKE_RE = re.compile(
+#     r'\b(import\s+\w+|from\s+\w+\s+import|requests\.get\(|pd\.DataFrame\(|plt\.[A-Za-z_]+|np\.[A-Za-z_]+|/api/[^"\']+|^\s*BASE_URL\s*=|^\s*BASE\s*=|^\s*endpoint\s*=|^\s*ENDPOINT\s*=|^\s*params\s*=)',
+#     re.I | re.M
+#)
+CODE_LIKE_RE = re.compile(r'\b(import|from|def |class |requests\.get|pd\.|plt\.)\b')
+MAP_LIKE_RE  = re.compile(r'\b(pcolormesh|imshow|meshgrid|cartopy|Basemap)\b', re.I)
+TS_LIKE_RE   = re.compile(r'\bplot\s*\(|rolling\(|resample\(|to_datetime\(|groupby\(\s*["\']date', re.I)
+CJK_LINE_RE  = re.compile(r'^[^\S\r\n]*[^\x00-\x7F]+.*$')   # 含 CJK 的整行（不含註解）
+JSON_PLAN_ANY_RE = re.compile(r'\{\s*"endpoint"\s*:\s*"/api/[^"]+"\s*,\s*"params"\s*:\s*\{[\s\S]*?\}\s*\}', re.I)
+
+# --- RAG helpers (doc_type normalize & OAS guarantee) ---
+
+_DOC_TYPE_ALIASES = {
+    "api", "oas", "openapi", "swagger", "api_specification", "openapi_spec", "openapi-3.1"
+}
+
+def _norm_doc_type(dt: str | None) -> str:
+    if not isinstance(dt, str):
+        return "n/a"
+    s = dt.strip().lower()
+    if s in _DOC_TYPE_ALIASES:
+        return "api_spec"
+    # 常見別名歸一
+    if s.replace("-", "_") in {"api_spec", "code_snippet", "cli_tool_guide",
+                               "web_article", "paper_note", "note"}:
+        return s.replace("-", "_")
+    return s
+
+def _has_type(hits: list[dict], type_name: str) -> bool:
+    for h in hits or []:
+        p = (h.get("payload") or {})
+        t = _norm_doc_type(p.get("doc_type"))
+        if t == type_name:
+            return True
+    return False
+
+def _force_include_api_spec(all_hits: list[dict], selected: list[dict]) -> tuple[list[dict], bool]:
+    """若 selected 裡沒有 api_spec，但 all_hits 裡有，則強制補進第一篇；回傳 (selected, forced_flag)。"""
+    if _has_type(selected, "api_spec"):
+        return selected, False
+
+    cand = None
+    # 先從 all_hits 找 doc_type=api_spec
+    for h in all_hits or []:
+        p = (h.get("payload") or {})
+        if _norm_doc_type(p.get("doc_type")) == "api_spec":
+            cand = h; break
+
+    # 次佳：找 title/source_file 含 swagger/openapi/oas
+    if cand is None:
+        for h in all_hits or []:
+            p = (h.get("payload") or {})
+            title = (p.get("title") or p.get("doc_id") or p.get("source_file") or "").lower()
+            if any(k in title for k in ("swagger", "openapi", "oas", "api spec")):
+                cand = h; break
+
+    if cand is not None:
+        # 插到最前面，並避免重複 (以 (doc_id) 或 (title, source_file) 去重)
+        used_keys = set()
+        def key_of(x):
+            px = (x.get("payload") or {})
+            return px.get("doc_id") or (px.get("title"), px.get("source_file"))
+        used_keys.add(key_of(cand))
+        out = [cand]
+        for h in selected:
+            k = key_of(h)
+            if k not in used_keys:
+                used_keys.add(k); out.append(h)
+        return out, True
+
+    return selected, False
+
+def _looks_like_codeish_text(s: str) -> bool:
+    return bool(CODE_LIKE_RE.search(s or ""))
+
+def _strip_leading_punct(s: str) -> str:
+    if not isinstance(s, str):
+        return s
+    s = s.lstrip()
+    s = ONE_PASS_MARKER_RE.sub(' ', s).lstrip()
+    s = EXPLAIN_TOKEN_RE.sub(' ', s).lstrip()
+    s = re.sub(r'^[\s\.\,\;\:\!\?\-\–\—\(\)\[\]\{\}…。，、；：「」『』（）《》〈〉【】＊\*？！]+', '', s)
+    return s.lstrip()
+
+def _ensure_fenced(code: str) -> str:
+    c = (code or "").strip()
+    if not c:
+        return c
+    if CODE_FENCE_RE.search(c):
+        return c
+    return f"```python\n{c}\n```"
+
+def merge_code_fences(*parts: str) -> str:
+    body = "\n".join([extract_code_from_markdown(p or "") for p in parts if p]).strip()
+    return f"```python\n{body}\n```" if body else ""
+
+def _clean_explain_text_md(txt: str) -> str:
+    s = re.sub(r'```[\s\S]*?```', '', txt or '')     # 去 code block
+    s = ONE_PASS_MARKER_RE.sub('', s)
+    s = EXPLAIN_TOKEN_RE.sub('', s)
+    s = s.replace('\r','')
+    s = "\n".join(ln.rstrip() for ln in s.split("\n"))
+    s = re.sub(r'\n{3,}', '\n\n', s)                 # 多於的空白行只縮到 1 個
+    return _strip_leading_punct(s).strip()
+
+def _extract_code_strict(txt: str) -> str:
+    raw_code = extract_code_from_markdown(txt).strip()
+    if not raw_code:
+        # 與 one-pass 一致：去掉 <<<...>>> 再嘗試
+        stripped = ONE_PASS_MARKER_RE.sub('', txt or '')
+        raw_code = extract_code_from_markdown(stripped).strip() or stripped.strip()
+    return _ensure_fenced(raw_code)
+
 def _mhw_chunk_general_rule() -> str:
     """
     一般性（不看 BBox or 年限）的 MHW chunk 提醒，讓 one-pass LLM 也知道限制。
     真正的精確提示仍在 multi-step 用 mhw_span_hint(plan) 產生 chunk_line。
     """
     return (
-        "If you choose the ODB MHW API ('/api/mhw' or '/api/mhw/csv'), enforce chunking limits:\n"
-        "- If the bounding box is larger than 90° × 90°, fetch at MOST one MONTH per request, loop monthly, and pandas.concat the pieces.\n"
-        "- If the bounding box is larger than 10° × 10°, fetch at MOST one YEAR per request, loop yearly, and pandas.concat the pieces.\n"
-        "- If the bounding box is within 10° × 10°, you may fetch up to 10 YEARS per request; if the range is longer, split by decade or year, then concat.\n"
+        "If you choose the ODB MHW API ('/api/mhw' or '/api/mhw/csv'), enforce chunking limits by the following three rules: "
+        "(1) If the bounding box is larger than 90° × 90°, fetch at MOST one MONTH per request, loop monthly, and pandas.concat the pieces. "
+        "(2) If the bounding box is larger than 10° × 10°, fetch at MOST one YEAR per request, loop yearly, and pandas.concat the pieces. "
+        "(3) If the bounding box is within 10° × 10°, you may fetch up to 10 YEARS per request; if the range is longer, split by decade or year, then concat.\n"
     )
+
+def build_chunk_line_from_plan(plan: dict | None) -> str:
+    """
+    用目前的 plan 推導具體 chunk_line；沒有命中則回空字串。
+    """
+    if not plan or not isinstance(plan, dict):
+        return ""
+    hint = mhw_span_hint(plan) if 'mhw_span_hint' in globals() else None
+    if not hint:
+        return ""
+    mode = hint.get("mode")
+    if mode == "monthly":
+        return ("因為此 BBox 超過 90°×90°，依 OAS 只能查 1 個月。\n"
+                "你必須以「逐月分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
+    if mode == "yearly":
+        return ("因為此 BBox 超過 10°×10°，依 OAS 只能查 1 年。\n"
+                "你必須以「逐年分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
+    if mode == "decade":
+        return ("此 BBox 在 10°×10° 以內，依 OAS 最長 10 年。\n"
+                "若時間區間超過 10 年，你必須以「每 10 年」或「逐年」分段，最後以 pandas.concat 串聯。")
+    return ""
 
 def extract_user_requested_vars(question: str, allowed: List[str]) -> List[str]:
     out = []
@@ -157,8 +299,8 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
 
     # 第二次：code/api 偏好（保留原結構與回傳格式）
     code_filter = models.Filter(should=[
+        models.FieldCondition(key="doc_type", match=models.MatchValue(value="api_spec")),
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_snippet")),
-        models.FieldCondition(key="doc_type", match=models.MatchValue(value="code_example")),
         models.FieldCondition(key="doc_type", match=models.MatchValue(value="cli_tool_guide")),
         models.FieldCondition(key="source_type", match=models.MatchText(text="code")),
     ])
@@ -261,9 +403,8 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     # 輕度多樣化：保證類型覆蓋（api_spec / code_* / web_article），其餘按 reranked 補齊
     by_type: Dict[str, List[dict]] = {}
     for h in reranked:
-        dt = (h.get("payload", {}) or {}).get("doc_type", "").lower()
+        dt = _norm_doc_type((h.get("payload", {}) or {}).get("doc_type"))
         by_type.setdefault(dt, []).append(h)
-
     selected, used_keys = [], set()
 
     def _push_one(pool_name: str):
@@ -297,6 +438,19 @@ def query_qdrant(question: str, topk: int=6, debug: bool=False) -> List[Dict[str
     if debug:
         dist = Counter([(h["payload"].get("doc_type"), h["payload"].get("title")) for h in selected])
         print(f"[DEBUG] diversified selection: {dict(dist)}")
+        # ---- 保證至少一篇 api_spec ----
+        # selected_before = list(selected)
+        selected, forced_oas = _force_include_api_spec(out, selected)
+        if forced_oas:
+            if debug:
+                print("[DEBUG] diversify | api_spec missing → forced insert from pool")
+            # 更新 by_type 統計顯示
+            # by_type = {}
+            # for h in selected:
+            #     p = (h.get("payload") or {})
+            #     dt = _norm_doc_type(p.get("doc_type"))
+            #     by_type.setdefault(dt, 0)
+            #     by_type[dt] += 1        
         print(f"[DEBUG] total hits(after merge dedupe): {len(out)}, selected: {len(selected)}")
 
     return selected
@@ -425,10 +579,10 @@ def _collect_api_specs_full_scan(limit: int = 1000) -> List[str]:
 
 def harvest_oas_whitelist(hits: List[Dict[str,Any]], debug: bool=False) -> Optional[Dict[str,Any]]:
     global OAS_CACHE
-    if OAS_CACHE is not None:
-        if debug:
-            print(f"[DEBUG] OAS cached: params={len(OAS_CACHE.get('params',[]))}, paths={len(OAS_CACHE.get('paths',[]))}")
-        return OAS_CACHE
+    # if OAS_CACHE is not None:
+    #     if debug:
+    #         print(f"[DEBUG] OAS cached: params={len(OAS_CACHE.get('params',[]))}, paths={len(OAS_CACHE.get('paths',[]))}")
+    #     return OAS_CACHE
 
     texts = _collect_api_specs_from_hits(hits)
     P,A,Paths = set(), set(), set()
@@ -500,17 +654,81 @@ def run_llm(llm: str, messages: list[dict], timeout: float = 600.0) -> str:
     # default: llama.cpp style
     return call_llamacpp_raw(prompt, timeout=timeout)
 
+def _sysrule_classifier() -> str:
+    """
+    MODE 分類規則（供 one-pass 與 multi-steps 共用）
+    - 任何想新增/調整分類訊號，改這裡就同時影響兩邊。
+    """
+    return (
+        "MODE classifier:\n"
+        "- Decide one token: 'code' or 'explain'.\n"
+        "- Output 'code' only if the user clearly asks for code/script/programmatic steps, plotting, API calls/downloads, or to continue/complete previous code.\n"
+        "- If the question contains *negative* phrases such as 'without code', '不用程式', '不要 code', '不需寫程式', '不用 API', '除了程式以外', treat it as 'explain'.\n"
+        "- Favor 'explain' when they ask to explain/define/list/compare/描述/解釋 without requesting code.\n"
+    )
+
+def _sysrule_spatial_temporal_guidance() -> str:
+    """
+    空間/時間/圖型判斷規則（共用）
+    """
+    return (
+        "Spatial/Temporal/Plot guidance:\n"
+        "- Spatial (bbox): prefer lon0,lon1,lat0,lat1; never default to global extent; do NOT cross 180° or 0°; if crossing would occur, split into two valid lon ranges and concat results with pandas.concat.\n"
+        "- Temporal: set start/end (YYYY-MM-DD). If a single year is given, deduce a 12-month span. For single-month map, fetch once (no loop).\n"
+        "- Plot type from intent:\n"
+        "  * '趨勢','變化','長期','時序','ONI','指數','時間' → time series.\n"
+        "  * '分佈','地圖','空間','格網','水平分佈' → map.\n"
+    )
+
+def _sysrule_append_guidance(oas: dict) -> str:
+    """
+    append 參數使用規則（共用；會顯示 OAS whitelist 中允許的 append 值）
+    """
+    allowed = (oas.get("append_allowed") or [])
+    return (
+        "Query param 'append' guidance:\n"
+        "- Include ALL requested variables in 'append' IF (and only if) 'append' exists and each value is in the whitelist.\n"
+        "- If the user asks for MHW level maps, ensure 'append' includes 'level'. If they ask for anomalies, ensure 'sst_anomaly' is included.\n"
+        "- Do NOT leave 'append' empty or undefined when variables are clearly required by the task.\n"
+        f"- Allowed values (from OAS): {allowed}\n"
+    )
+
+def _sysrule_oas_whitelist(oas: dict) -> str:
+    """
+    把 OAS 白名單（paths/params/append_allowed）印成字串（共用）
+    """
+    paths = oas.get("paths") or []
+    params = oas.get("params") or []
+    app = oas.get("append_allowed") or []
+    return (
+        "OAS Whitelists:\n"
+        f"- paths: {paths}\n"
+        f"- params: {params}\n"
+        f"- append allowed: {app}\n"
+        "Use only whitelisted endpoints/params; do NOT invent endpoints or parameters.\n"
+    )
+
+def _sysrule_explain(force_zh: bool) -> str:
+    lang_line = ("- 回答請使用繁體中文。\n" if force_zh else "- Answer in the user's language.\n")
+    return (
+        "You are an ODB assistant. Provide a clear, concise explanation that directly addresses the user's question.\n"
+        + lang_line +
+        "- Use ONLY the information in the provided notes when citing specific options/resources.\n"
+        "- DO NOT include any programming code, code fences, pseudo-code, or placeholders.\n"
+        "- Avoid one-pass control markers like <<<...>>> and tokens like {explain}.\n"
+        "- Prefer actionable, non-code options when relevant (e.g., web pages, dashboards, documented tools),\n"
+        "  and summarize what a user can do and where to find it.\n"
+        "- Keep it short but complete: 3–8 short paragraphs or a tight bulleted list.\n"
+        "- If the notes include a CLI guide, describe what it enables at a high level (no commands).\n"
+        "- If the question asks to explain or add comments to the previous code, focus on explaining each step clearly.\n"
+    )
+
 # --------------------
 # Mode classifier
 # --------------------
 def llm_choose_mode(question: str, llm: str) -> str:
-    sysrule = (
-        "You are a classifier. Read the question and output exactly one token: 'code' or 'explain'.\n"
-        "- Output 'explain' when the user asks to explain/define/list/compare/describes something, or explicitly says not to use code.\n"
-        "- Output 'code' only when the user asks for code, script, programmatic steps, API calls, downloads, plotting, or when they ask to continue/complete previous code.\n"
-        "Do NOT include any other text or reasoning. Output exactly one token."
-    )
-    prompt = f"{sysrule}\n\nQuestion:\n{question}\n\nYour answer (one token):"
+    sysrule = _sysrule_classifier()+ "\nDo NOT include any other text. Output exactly one token: code or explain."
+    prompt = f"{sysrule}\n\nQuestion:\n{question}\n\nYour answer:"
     try:
         raw = call_ollama_raw(prompt) if llm=="ollama" else call_llamacpp_raw(prompt)
         ans = (raw or "").strip().lower()
@@ -519,11 +737,11 @@ def llm_choose_mode(question: str, llm: str) -> str:
         return ans
     except Exception:
         ql = question.lower()
-        has_continue = bool(CONTINUE_HINT.search(ql))
+        neg = any(k in ql for k in ["不用程式","不要程式","不用 code","不要 code","不用 api","除了程式以外"])
+        cont = bool(CONTINUE_HINT.search(ql))
         has_code_words = any(k in ql for k in ["python","code","程式","範例","sample","plot","畫圖","下載","api 呼叫","呼叫 api","requests"])
-        has_no_code_neg = any(k in ql for k in ["不要程式","不用程式","除了程式","不用 code","不要 code","不是程式","不用寫程式","如果不用程式","除了程式以外"])
-        if has_no_code_neg: return "explain"
-        return "code" if (has_continue or has_code_words) else "explain"
+        if neg: return "explain"
+        return "code" if (cont or has_code_words) else "explain"
 
 # --------------------
 # Planning
@@ -609,6 +827,15 @@ def llm_json_plan(question: str, oas: Dict[str,Any], llm: str,
 def _split_csv(val: str) -> List[str]:
     return [x.strip() for x in str(val).split(",") if x.strip()]
 
+def _norm_append_values(v) -> list[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [x.strip().lower() for x in v.split(",") if x.strip()]
+    if isinstance(v, (list, tuple, set)):
+        return [str(x).strip().lower() for x in v]
+    return [str(v).strip().lower()]
+
 def validate_plan(plan: Dict[str,Any], oas: Dict[str,Any]) -> Tuple[bool, str]:
     if not isinstance(plan, dict): return False, "plan is not a dict"
     endpoint = plan.get("endpoint"); params= plan.get("params")
@@ -630,12 +857,12 @@ def validate_plan(plan: Dict[str,Any], oas: Dict[str,Any]) -> Tuple[bool, str]:
                 return False, f"param '{k}' value '{v}' not allowed (enum)"
 
     # append 值檢查
-    if "append" in params:
-        allowed_append = set(oas.get("append_allowed", []))
-        if allowed_append:
-            items = _split_csv(params["append"])
-            if not items or any(it not in allowed_append for it in items):
-                return False, f"append contains values not allowed: {params['append']}"
+    if "append" in params and (oas.get("append_allowed") or []):
+        allowed = {str(a).lower() for a in oas.get("append_allowed") or []}
+        vals = _norm_append_values(params.get("append"))
+        bad = [v for v in vals if v not in allowed]
+        if bad:
+            return False, f"append contains values not allowed: {bad}"
 
     # YYYY-MM → YYYY-MM-DD
     for key in ("start","end"):
@@ -792,129 +1019,86 @@ def mhw_span_hint(plan: Dict[str,Any]) -> Optional[Dict[str,Any]]:
     return chunk
 
 # --------------------
-# Single-pass gate（僅影響提示語氣，不增加 LLM 呼叫次數）
-# --------------------
-def should_single_pass(question: str, oas_info: dict, hits: list[dict], debug: bool=False) -> bool:
-    """
-    啟動單輪(one-pass)的保守門檻：
-    - 有找到至少一個 OAS endpoint（避免完全沒 OAS 時硬要出碼）
-    - 問題長度適中（< 600 字），且沒有明確「不用程式/只解釋」意圖
-    - 問題含程式/繪圖意圖關鍵詞，或 hits 中有 code_snippet / code_example 類型
-    """
-    ql = (question or "").strip().lower()
-    if not oas_info or not oas_info.get("paths"):
-        if debug:
-            print("[DEBUG] single-pass: skip (no OAS paths).")
-        return False
-
-    if len(ql) >= 600:
-        if debug:
-            print("[DEBUG] single-pass: skip (question too long).")
-        return False
-
-    neg = any(k in ql for k in ["不要程式", "不用程式", "不用 code", "不要 code", "只解釋", "explain only", "no code"])
-    if neg:
-        if debug:
-            print("[DEBUG] single-pass: skip (negative intent).")
-        return False
-
-    pos_kw = ["python", "code", "程式", "範例", "plot", "畫圖", "下載", "api", "呼叫", "requests", "時序", "地圖"]
-    has_pos = any(k in ql for k in pos_kw)
-    has_code_doc = any((h.get("payload", {}).get("doc_type") or "").lower() in ("code_snippet", "code_example")
-                       for h in (hits or []))
-
-    ok = bool(has_pos or has_code_doc)
-    if debug:
-        print(f"[DEBUG] single-pass: {'use' if ok else 'skip'} (pos_kw={has_pos}, code_doc={has_code_doc})")
-    return ok
-
-# --------------------
 # Markdown code extraction
 # --------------------
+def _preclean_text_for_code(s: str) -> str:
+    """
+    在抽碼前的前清理：
+    - 移除 BOM/零寬/全形空白等隱藏字元
+    - 若在第一個 ``` 之前只有標點/空白，直接砍掉前綴（避免前導「？」等噪音造成 line 1 SyntaxError）
+    """
+    if not isinstance(s, str):
+        return ""
+    s = s.replace("\ufeff", "").replace("\u200b", "")
+    s = s.lstrip("\u3000").lstrip()  # 全形空白與一般空白
+    m = re.search(r"```", s)
+    if m:
+        prefix = s[:m.start()]
+        if re.fullmatch(r"[\s\W\u3000-\u303F\uFF00-\uFFEF]*", prefix or ""):
+            s = s[m.start():]
+    return s
 
 def extract_code_from_markdown(md: str) -> str:
     """
-    更健壯的擷取：優先抓第一個 ```python fence，
-    其次抓第一個 ``` 任意語言。若沒有結尾 ```，取到文末。
-    最後做一次剝殼與去掉 BOM/隱藏字元。
+    1) 先抓所有 ```python fenced blocks；若無再抓所有 ``` 任意語言；否則嘗試把全文當 code。
+    2) 多個 fence 時，挑「最像 Python」且最長的那一段。
     """
     if not md:
         return ""
-    # 優先 python fence
-    m = re.search(r"```(?:python|py)\s*\n([\s\S]*?)\n```", md, flags=re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-
-    # 允許缺少結尾 fence：從第一個 ```python 開始截到文末
-    m2 = re.search(r"```(?:python|py)\s*\n([\s\S]*)$", md, flags=re.IGNORECASE)
-    if m2:
-        return m2.group(1).strip()
-
-    # 其次：任意 ```...``` fence
-    m3 = re.search(r"```\s*\n([\s\S]*?)\n```", md)
-    if m3:
-        return m3.group(1).strip()
-
-    # 允許任意 ``` 開頭到文末
-    m4 = re.search(r"```\s*\n([\s\S]*)$", md)
-    if m4:
-        return m4.group(1).strip()
-
-    # 沒有 fence，只能嘗試把整段當成 code（常見於 LLM 回覆純 code 無 fence）
-    return md.strip()
+    fences = []
+    for pat in (r"```(?:python|py)\s*\n([\s\S]*?)\n```",
+                r"```(?:python|py)\s*\n([\s\S]*)$",
+                r"```\s*\n([\s\S]*?)\n```",
+                r"```\s*\n([\s\S]*)$"):
+        for m in re.finditer(pat, md, flags=re.IGNORECASE):
+            fences.append(m.group(1))
+    candidates = fences if fences else [md]
+    def score(s: str) -> tuple:
+        # (是否像python, 長度)
+        return (1 if CODE_LIKE_RE.search(s or "") else 0, len(s or ""))
+    best = max(candidates, key=score)
+    return (best or "").strip()
 
 # --------------------
 # Code generation & guard
 # --------------------
+# 放在 code/LLM helpers 區塊
+# 置於檔頭 imports 附近已有 re/json/ast 的前提下
+FULLWIDTH_PUNCTS = "\uFF01\uFF1F\uFF0C\u3002\u3001"
 
-def _check_python_syntax(src: str) -> tuple[bool, str | None]:
-    try:
-        ast.parse(src)
-        return True, None
-    except SyntaxError as e:
-        return False, f"SyntaxError at line {e.lineno}: {e.msg}"
+def _preclean_code_for_parse(s: str, debug: bool=False, tag: str="") -> str:
+    if not s:
+        return ""
+    # 清掉任何位置的 JSON PLAN（不只在檔頭）
+    s = JSON_PLAN_ANY_RE.sub("\n", s)
 
-def _looks_like_complete_code(code: str, debug: bool=False) -> bool:
-    """Heuristic completeness check: AST-parse + trailing isolated import alias detection."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
-        if debug:
-            print(f"[DEBUG] Not complete code: SyntaxError at line {e.lineno}: {e.msg}")
-        return False
+    # 清掉獨立的 'code' token 與明顯非註解中文前言行（保留以 # 開頭者）
+    out_lines = []
+    seen_real = False
+    for ln in (s.replace("\r","").split("\n")):
+        if re.match(r'^\s*code\s*$', ln, flags=re.I):
+            continue
+        if not seen_real and CJK_LINE_RE.match(ln) and not ln.lstrip().startswith("#"):
+            # 跳過純中文說明行（直到我們看到真正的程式語句）
+            continue
+        out_lines.append(ln)
+        if not seen_real and (ln.strip().startswith(("import ","from ","BASE_URL","endpoint","def ","class ")) or CODE_LIKE_RE.search(ln)):
+            seen_real = True
+    s = "\n".join(out_lines).strip()
 
-    if not getattr(tree, 'body', None):
-        if debug:
-            print("[DEBUG] Empty code body")
-        return False
+    # 若有多段 fence 的殘留，整體再抽一次 code → 確保單一段
+    code = extract_code_from_markdown(s)
+    if debug:
+        print(f"[DEBUG] preclean({tag}): {len(s)}→{len(code)} chars after strip preface/json")
 
-    imported_aliases: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imported_aliases.add(alias.asname or alias.name.split('.')[0])
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                imported_aliases.add(alias.asname or alias.name)
-
-    last_stmt = tree.body[-1]
-    if isinstance(last_stmt, ast.Expr) and isinstance(last_stmt.value, ast.Name):
-        if last_stmt.value.id in imported_aliases:
-            if debug:
-                print("[DEBUG] Not complete code: Isolated import alias at end -> likely truncated")
-            return False
-
-    return True
-
-def _trim_trailing_partial_line(code: str) -> str:
-    lines = code.rstrip().splitlines()
-    if not lines:
-        return code
-    last = lines[-1].rstrip()
-    if last.count("(") > last.count(")") and not last.strip().endswith("\\"):
-        return "\n".join(lines[:-1]).rstrip() + "\n"
     return code
 
+def _debug_dump_code(code: str, tag: str, debug: bool, max_chars: int = 8000) -> None:
+    if not debug:
+        return
+    length = len(code or "")
+    body = code if length <= max_chars else (code[:max_chars] + "\n...[truncated]...")
+    print(f"[DEBUG] ==== BEGIN {tag} CODE DUMP ({length} chars) ====\n{body}\n[DEBUG] ==== END {tag} CODE DUMP ====")
 
 def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
     base = [
@@ -922,13 +1106,14 @@ def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
         f"- Use server URL defined in OAS as BASE_URL (e.g., MHW API's BASE_URL = {BASE_URL}). Use the EXACT endpoint and params provided (whitelist from OAS).",
         "- Call the API with: requests.get(f\"{BASE_URL}{endpoint}\", params=params, timeout=60).",
         "- Do NOT manually join query strings; must use params=dict. Do NOT add headers/API keys/extra params.",
-        "- Always parse JSON with r.json() → pandas.DataFrame (NOT pandas.read_json; NOT io.StringIO on r.text).",
-        "- Use CSV parsing (pandas.read_csv(io.StringIO(r.text))) ONLY IF the endpoint endswith('/csv') OR params.format=='csv',",
-        "  AND only if the user explicitly asked for CSV/download.",
+        "- Always parse JSON response of API with r.json() and then pandas.DataFrame (NOT pandas.read_json, nor r.text). "
+        "- Use CSV parsing (io.StringIO) ONLY if BOTH: when user explicitly ask for CSV/download AND API endpoint endswith('/csv') OR params.format=='csv'. "
+        "- 'append' parameter (e.g., in MHW API's OAS) rules:",
+        "  • If 'append' exists and task implies variables (e.g., level for MHW map; sst_anomaly for anomalies), include them. Do not leave 'append' empty when variables are clearly required.",
         "- If 'date' exists, convert with pandas.to_datetime(df['date']). For time series, use 'date' on x-axis.",
-        "- Decide plot type from intent: time series (trend/變化) vs. map (spatial distribution) of a data variable.",
         "- If you adapt from EXAMPLE snippets in RAG_NOTES, note that IMPORTS ARE REMOVED on purpose — add ONLY the imports you actually need.",
-        "- If the user asks for a spatial distribution at a specific month/day (e.g., '2002-01' or '2002-01-01'), fetch ONCE for that month only; DO NOT loop.",
+        "- Decide plot type first from intent: time series (trend/趨勢/變化) vs. map (spatial distribution/空間分佈) of a data variable. Decide one type to plot.",
+        "- If the user asks for a map (spatial distribution) at a specific month/day (e.g., '2002-01' or '2002-01-01'), fetch ONCE for that month only; DO NOT loop.",
         "- For map, build a gridded array aligned to lon/lat:",
         "  (1) extract unique sorted lon/lat from df columns (not synthetic linspace),",
         "  (2) create numpy.meshgrid from those unique lon/lat,",
@@ -950,203 +1135,166 @@ def _build_common_code_sysrule(chunk_line: str | None = None) -> str:
         ]
     return "\n".join(base)
 
+def code_from_plan_via_llm(
+    question: str,
+    plan: dict,
+    llm: str,
+    debug: bool = False,
+    chunk_line: str | None = None,
+    oas: dict | None = None,   # <— NEW
+) -> str | None:
+    oas = oas or _get_oas_cache()  # <— resolve    # 共用規則（與 one-pass 一致）
+    sysrule = "\n".join([
+        _sysrule_oas_whitelist(oas),
+        _sysrule_spatial_temporal_guidance(),
+        _sysrule_append_guidance(oas),
+        _build_common_code_sysrule(chunk_line),
+        "Do NOT invent endpoints or parameters. Prefer JSON → requests.get(...).json() → pd.DataFrame(...)."
+    ])
 
-def code_from_plan_via_llm(question: str, plan: dict, llm: str, debug: bool=False) -> str:
-    endpoint = plan["endpoint"]
-    params   = plan["params"]
-
-    rag_hits = globals().get("LAST_HITS") or []
-    rag_notes = collect_rag_notes(rag_hits, max_chars=1000, debug=debug)
-
-    # CHUNKING constraint
-    chunk_hint = mhw_span_hint(plan)
-    if debug:
-        print(f"[DEBUG] chunk_hint: {chunk_hint}")
-    chunk_line = ""
-    if chunk_hint:
-        if chunk_hint.get("mode") == "monthly":
-            chunk_line = ("因為此 BBox 超過 90°×90°，依 OAS 只能查 1 個月。\n"
-                          "你必須以「逐月分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
-        elif chunk_hint.get("mode") == "yearly":
-            chunk_line = ("因為此 BBox 超過 10°×10°，依 OAS 只能查 1 年。\n"
-                          "你必須以「逐年分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
-        elif chunk_hint.get("mode") == "decade":
-            chunk_line = ("此 BBox 在 10°×10° 以內，依 OAS 最長 10 年。\n"
-                          "若時間區間超過 10 年，你必須以「每 10 年」或「逐年」分段，最後以 pandas.concat 串聯。")
-
-    sysrule = _build_common_code_sysrule(chunk_line)
-    sysrule += "\n- IMPORTANT: Write a COMPLETE single-file script. Do NOT leave unfinished fences or TODOs. End with plt.show() when plotting."
-    
     user = (
-        f"QUESTION:\n{question.strip()}\n\n"
-        f"ENDPOINT:\n{endpoint}\n\n"
-        f"PARAMS:\n{json.dumps(params, ensure_ascii=False, indent=2)}\n\n"
-        "RAG_HINTS (僅在需要時可作為註解參考；請依題意調整而非死抄)：\n"
-        f"{rag_notes or '(none)'}\n"
-        "IMPORTANT: Output ONLY one code block or plain code. No prose."
+        "TASK:\n" + question + "\n\n"
+        "PLAN JSON (must implement exactly):\n" + json.dumps(plan, ensure_ascii=False) + "\n"
     )
-
-    messages = [
-        {"role": "system", "content": sysrule},
-        {"role": "user",   "content": user},
-    ]
 
     try:
-        txt = run_llm(llm, messages, timeout=600.0)
+        if debug:
+            print("[DEBUG] use codegen LLM")
+        txt = run_llm(llm, [{"role": "system", "content": sysrule},
+                            {"role": "user", "content": user}], timeout=600.0) or ""
     except Exception as e:
         if debug:
-            print(f"[DEBUG] Plan LLM failed: {e}")
+            print(f"[DEBUG] LLM codegen error: {e}")
         return ""
 
-    if debug:
-        print(f"[DEBUG] sysrule chars: {len(sysrule)}; user chars: {len(user)}")
-        print(f"[DEBUG] LLM raw reply chars: {len(txt or '')}")
-        print(f"[DEBUG] LLM raw preview: {(txt or '')[:300].replace(chr(10),'\\n')}")
-
-    code = extract_code_from_markdown(txt)
-    if debug:
-        print(f"[DEBUG] LLM reply contains code fence: {('```' in (txt or ''))}")
-        print(f"[DEBUG] extracted code length: {len(code)}")
-
-    unclosed = ("```" in (txt or "")) and not re.search(r"```(?:python|py)?\s*[\s\S]*?```", txt, flags=re.IGNORECASE)
-    if unclosed:
+    txt = _preclean_text_for_code(txt or "")
+    code = _extract_code_strict(txt)
+    # 未閉合/不完整 → 單次續寫
+    unclosed = ("```" in (txt or "")) and not CODE_FENCE_RE.search(txt)
+    looks_ok = _looks_like_complete_code(code, debug=debug)
+    if unclosed or not looks_ok:
+        local_chunk_line = build_chunk_line_from_plan(plan)
         if debug:
-            print("[DEBUG] Detected unclosed code fence; checking syntax to decide continue.")
-        if _looks_like_complete_code(code, debug):
-            if debug:
-                print("[DEBUG] Code parses fine; skip auto-continue despite unclosed fence.")
-            stitched = code.strip()
-        else:
-            if debug:
-                print("[DEBUG] Code not syntactically complete; will auto-continue once.")
-            stitched = code.strip()
-            more = code_continue_via_llm(
-                question="請從上段未完成處續寫，補足缺漏行，完成繪圖與收尾；不要重複前段程式碼；保持縮排正確一致。",
-                plan=plan,
-                last_code=stitched,
-                llm=llm,
-                debug=debug
-            )
-            if more:
-                stitched = stitched.rstrip() + "\n\n" + more.lstrip()
-    else:
-        stitched = code.strip()
+            print(f"[DEBUG] chunk_hint: {('n/a' if not local_chunk_line else 'present')}")
+        _debug_dump_code(code, "ONE-PASS BEFORE CONTINUE", debug)
+        if debug:
+            print("[DEBUG] one-pass: need continuation")
 
-    return stitched
+        more = code_continue_via_llm(
+            question="請從上段未完成處繼續，補足缺漏行，完成繪圖與收尾，不要重複前段程式碼，但保持縮排正確一致。",
+            plan=plan,
+            last_code=code,
+            llm=llm,
+            debug=debug,
+            chunk_line=local_chunk_line,
+            oas=oas
+        )
+        if more:
+            code = merge_code_fences(code.rstrip() + "\n\n", more.lstrip())
+    return code
 
+def code_continue_via_llm(
+    question: str,
+    plan: dict,
+    last_code: str,
+    llm: str,
+    debug: bool = False,
+    chunk_line: str | None = None,
+    oas: dict | None = None,   # <— NEW
+) -> str | None:
+    oas = oas or _get_oas_cache()   
+    # 共用系統規則（包含 CSV/JSON、append、pcolormesh、colormap、禁止 while 等）
+    chunk_line = None
+    hint = mhw_span_hint(plan) if plan else None
+    if hint:
+        if hint["mode"] == "monthly":
+            chunk_line = ("因為此 BBox 超過 90°×90°，依 OAS 只能查 1 個月。請逐月分段，最後以 pandas.concat 串聯。")
+        elif hint["mode"] == "yearly":
+            chunk_line = ("此 BBox 超過 10°×10°，依 OAS 最長 1 年。請逐年分段，最後以 pandas.concat 串聯。")
+        elif hint["mode"] == "decade":
+            chunk_line = ("此 BBox 在 10°×10° 內，依 OAS 最長 10 年。時間超過時分段（每 10 年或逐年），pandas.concat 串聯。")
 
-def code_continue_via_llm(question: str, plan: dict, last_code: str, llm: str, debug: bool=False) -> str:
-    endpoint = plan["endpoint"]
-    params   = plan["params"]
-
-    chunk_hint = mhw_span_hint(plan)
-    chunk_line = ""
-    if chunk_hint:
-        if chunk_hint.get("mode") == "monthly":
-            chunk_line = ("因為此 BBox 超過 90°×90°，依 OAS 只能查 1 個月。\n"
-                          "你必須以「逐月分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
-        elif chunk_hint.get("mode") == "yearly":
-            chunk_line = ("因為此 BBox 超過 10°×10°，依 OAS 只能查 1 年。\n"
-                          "你必須以「逐年分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
-        elif chunk_hint.get("mode") == "decade":
-            chunk_line = ("此 BBox 在 10°×10° 以內，依 OAS 最長 10 年。\n"
-                          "若時間區間超過 10 年，你必須以「每 10 年」或「逐年」分段，最後以 pandas.concat 串聯。")
-
-    sysrule = _build_common_code_sysrule(chunk_line)
-
-    # single-pass（續寫時仍提醒收尾完整）
-    sysrule += "\n- IMPORTANT: Produce the missing continuation only and finish the plot (include plt.show())."
-
-    user = (
-        f"QUESTION:\n{question.strip()}\n\n"
-        f"ENDPOINT:\n{endpoint}\n\n"
-        f"PARAMS:\n{json.dumps(params, ensure_ascii=False, indent=2)}\n\n"
-        "PREVIOUS_SCRIPT (do NOT repeat these lines in continuation mode):\n"
-        f"{last_code}\n\n"
-        "IMPORTANT:\n"
-        "- If user did NOT ask to modify logic/params, output ONLY the missing continuation (plain code or a single code block).\n"
-        "- Do NOT repeat previous lines; keep indentation consistent so the snippet can be concatenated directly.\n"
-        "- If user DID ask to modify, output ONE complete runnable single-file script (no prose)."
-    )
-
+    sysrule = "\n".join([
+        "You are continuing an *incomplete* Python script. Do NOT repeat earlier code; only finish the missing tail.",
+        _sysrule_oas_whitelist(oas),
+        _sysrule_spatial_temporal_guidance(),
+        _sysrule_append_guidance(oas),
+        _build_common_code_sysrule(chunk_line),
+        "Do NOT switch endpoints; keep the same endpoint/params shape as the plan. Prefer JSON → requests.get(...).json() → DataFrame."
+    ])
     messages = [
-        {"role": "system", "content": sysrule},
-        {"role": "user",   "content": user},
+        {"role":"system","content": sysrule},
+        {"role":"user","content":
+            "請從下列未完成的程式碼處繼續，補齊缺漏並完成繪圖與收尾。"
+            "不要重複前段程式碼，保持縮排一致。\n\n--- 上段程式碼 ---\n" + (last_code or "")
+        }
     ]
-
     try:
         if debug:
             print("[DEBUG] use Continue LLM")
-        txt = run_llm(llm, messages, timeout=600.0)
+        txt = run_llm(llm, messages, timeout=600.0) or ""
     except Exception as e:
         if debug:
-            print(f"[DEBUG] Continue LLM failed: {e}")
+            print(f"[DEBUG] Continue LLM error: {e}")
         return ""
 
-    cont = extract_code_from_markdown(txt).strip() or (txt or "").strip()
+    txt = _preclean_text_for_code(txt or "")
+    more = extract_code_from_markdown(txt).strip() or _strip_one_pass_markers(txt).strip()
+    # 清理補段
+    more = _preclean_code_for_parse(more, debug=debug, tag="continue")
+    return _ensure_fenced(more) if more else ""
+
+CODE_FENCE_RE = re.compile(r"```(?:python|py)?[\s\S]*?```", re.IGNORECASE)
+
+def _parse_one_pass_output(txt: str, debug: bool=False) -> Dict[str,Any]:
+    out: Dict[str,Any] = {"raw": txt or ""}
+    t = txt or ""
+
+    m_mode = re.search(r'<<<MODE>>>\s*(code|explain)\s*<<<END>>>', t, flags=re.IGNORECASE)
+    mode = (m_mode.group(1).lower() if m_mode else None)
+
+    # 有明確 code fence/區塊才視為 code；否則用宣告的 MODE；再不然預設 explain
+    has_code_block = bool(CODE_FENCE_RE.search(t) or re.search(r'<<<CODE\s+python>>>', t, flags=re.I))
+    if mode is None:
+        mode = "code" if has_code_block else "explain"
+    out["mode"] = mode
+
+    # 解析 PLAN（保留）
+    m_plan = re.search(r'<<<PLAN>>>\s*([\s\S]*?)\s*<<<END>>>', t, flags=re.IGNORECASE)
+    if m_plan:
+        try:
+            out["plan"] = json.loads(m_plan.group(1))
+        except Exception:
+            out["plan"] = None
+
+    if mode == "code":
+        m_code = re.search(r'<<<CODE\s+python>>>\s*([\s\S]*?)\s*<<<END>>>', t, flags=re.IGNORECASE)
+        raw_code = (m_code.group(1).strip() if m_code else t)
+        raw_code = _strip_one_pass_markers(raw_code)
+        raw_code = _preclean_text_for_code(raw_code or "")
+        code = extract_code_from_markdown(raw_code).strip() or raw_code
+        code = _preclean_code_for_parse(code, debug=debug, tag="parse_one_pass")
+        if not CODE_LIKE_RE.search(code or ""):
+            # 這其實是文字，不當 CODE
+            out["mode"] = "explain"
+            s = _clean_explain_text_md(t)  # 你既有的清理（會去掉 <<<...>>> 與 {explain} 等）
+            out["explain"] = _strip_leading_punct(s)
+            out.pop("code", None)
+        else:
+            out["code"] = _ensure_fenced(code) if code else ""
+    else:
+        s = _clean_explain_text_md(t)
+        # 清掉殘留標記
+        s = re.sub(r'\bMODE\s*:\s*(code|explain)\b', ' ', s, flags=re.I)
+        s = re.sub(r'\{code\}|\{plan\}', ' ', s, flags=re.I)
+        s = re.sub(r'<<<[^>]+>>>', ' ', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        out["explain"] = _strip_leading_punct(s)
 
     if debug:
-        print(f"[DEBUG] (continue) LLM raw reply chars: {len(txt or '')}")
-        print(f"[DEBUG] (continue) LLM raw preview: {(txt or '')[:300].replace(chr(10),'\\n')}...")
-        print(f"[DEBUG] (continue) contains code fence: {('```' in (txt or ''))}")
-        print(f"[DEBUG] (continue) extracted code length: {len(cont)}")
-
-    return cont
-
-def _parse_one_pass_output(txt: str) -> dict:
-    """
-    解析 one-pass LLM 輸出。
-    期待格式：
-      <<<MODE>>>code<<<END>>>
-      <<<PLAN>>>{...}<<<END>>>
-      <<<CODE python>>>
-      ```python
-      ...
-      ```
-      <<<END>>>
-
-      或
-
-      <<<MODE>>>explain<<<END>>>
-      <<<EXPLAIN>>>
-      ...markdown...
-      <<<END>>>
-    """
-    out = {"mode": None, "plan": None, "code": None, "explain": None}
-    if not txt:
-        return out
-
-    # MODE
-    m = re.search(r"<<<MODE>>>(code|explain)<<</?END>>>", txt, flags=re.IGNORECASE)
-    if m:
-        out["mode"] = m.group(1).lower()
-
-    # PLAN JSON
-    mp = re.search(r"<<<PLAN>>>\s*({[\s\S]*?})\s*<<</?END>>>", txt, flags=re.IGNORECASE)
-    if mp:
-        try:
-            out["plan"] = json.loads(mp.group(1))
-        except Exception:
-            pass
-
-    # CODE
-    if out["mode"] == "code":
-        # 優先抓三引號 code fence
-        code = extract_code_from_markdown(txt)
-        if not code:
-            # 次選以 <<<CODE python>>> ... <<<END>>> 包裹
-            mc = re.search(r"<<<CODE\s+python>>>\s*```(?:python)?\s*([\s\S]*?)\s*```\s*<<</?END>>>",
-                           txt, flags=re.IGNORECASE)
-            if mc:
-                code = mc.group(1)
-        out["code"] = (code or "").strip()
-
-    # EXPLAIN
-    if out["mode"] == "explain":
-        me = re.search(r"<<<EXPLAIN>>>\s*([\s\S]*?)\s*<<</?END>>>", txt, flags=re.IGNORECASE)
-        if me:
-            out["explain"] = me.group(1).strip()
-
+        keys = ", ".join(sorted(out.keys()))
+        clen = len(out.get("code","") or "")
+        print(f"[DEBUG] _parse_one_pass_output → keys: {keys} | mode={out['mode']} | code_len={clen}")
     return out
 
 def _strip_one_pass_markers(s: str) -> str:
@@ -1156,123 +1304,43 @@ def _strip_one_pass_markers(s: str) -> str:
     s = re.sub(r'<<<[^>]+>>>', '', s)  # 殘留片段
     return s.strip()
 
-def rerank_and_diversify_hits(hits: list,
-                              query: str,
-                              prefer_map: bool=False,
-                              intent_hint: Optional[str]=None,
-                              debug: bool=False) -> list:
-    """
-    輕量 re-rank + diversify：
-    - 不改 query_qdrant 回傳結構
-    - 'explain' 時降低純 code/api 的比重、提昇 web/guide；'code' 或 None 則保持中性
-    - 多樣性去重仍用 (doc_id or canonical_url or title_normalized)
-    """
-    if not hits:
-        return []
-
-    # 初步打分（溫和，避免「硬」偏向）
-    scored = []
-    ql = (query or "").lower()
-    for h in hits:
-        base = 1.0
-        dt = (h.get("payload", {}).get("doc_type") or "").lower()
-        title = (h.get("payload", {}).get("title") or h.get("title") or "").lower()
-
-        # 根據意圖微調（非硬性 doc_type 加分）
-        if intent_hint == "explain":
-            if dt in ("web_article", "cli_tool_guide"):
-                base += 0.35
-            elif dt in ("api_spec", "code_snippet", "code_example"):
-                base -= 0.15
-        elif intent_hint == "code":
-            # 保持中性；不特別加分，避免你前述的雙重偏向
-            pass
-
-        # 頂多再加上一點 query 字面相關性
-        if any(k in title for k in ["enso", "marine heatwave", "nino", "mhw"]):
-            base += 0.1
-
-        scored.append((base, h))
-
-    # 排序
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # 多樣性去重（以 doc_id 或 canonical_url 或標題歸一）
-    seen = set()
-    out = []
-    for s, h in scored:
-        p = h.get("payload") or {}
-        key = p.get("doc_id") or p.get("canonical_url") or (p.get("title") or h.get("title") or "").split(" — ")[0].strip().lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(h)
-
-    # 控制輸出長度（不改動原來 topk 的行為，這裡僅保守留原順序）
-    if debug:
-        from collections import Counter
-        c = Counter((h.get("payload", {}).get("doc_type") or h.get("doc_type") or "n/a") for h in out)
-        print(f"[DEBUG] rerank/diversify intent={intent_hint!r} → type mix: {c}")
-
-    return out
-
+# === restore: explain_via_llm (uses rerank+diversify first; falls back if needed) ===
 def explain_via_llm(question: str, hits: list, llm: str, debug: bool = False) -> str:
-    """
-    單一 LLM 呼叫的 explain：根據 RAG 筆記與問題，產生簡潔、可行、無程式碼的說明。
-    - 嚴禁輸出 code fence、PLACEHOLDER（如 {explain}）或 one-pass 控制標記（<<<...>>>）
-    - 若模型仍回傳空字串，則使用本地降級：從 RAG 筆記擷取文字摘要
-    """
-    # 蒐集 RAG 筆記（不更動現有簽名）
-    rag_notes = collect_rag_notes(hits, max_chars=1000, debug=debug)
+    # 先嘗試 re-rank/多樣化；失敗則以簡單優先規則 fallback
+    try:
+        picked = rerank_and_diversify_hits(hits, intent="explain", topk=4, debug=debug)
+    except Exception:
+        priority = {"web_article": 0, "cli_tool_guide": 1, "manual": 2, "faq": 3, "paper_note": 4,
+                    "api_spec": 8, "code_snippet": 9, "code_example": 9}
+        def _rk(h):
+            k = (h.get("payload", {}) or {}).get("doc_type", "").lower()
+            return priority.get(k, 7)
+        picked = sorted(hits or [], key=_rk)[:4]
 
-    sysrule = (
-        "You are an ODB assistant. Provide a clear, concise explanation that directly addresses the user's question.\n"
-        "- Use ONLY the information in the provided notes when citing specific options/resources.\n"
-        "- DO NOT include any programming code, code fences, pseudo-code, or placeholders.\n"
-        "- Avoid one-pass control markers like <<<...>>> and tokens like {explain}.\n"
-        "- Prefer actionable, non-code options when relevant (e.g., web pages, dashboards, documented tools),"
-        " and summarize what a user can do and where to find it.\n"
-        "- Keep it short but complete: 3–8 short paragraphs or a tight bulleted list.\n"
-        "- If the notes include a CLI guide, describe what it enables at a high level (no commands)."
-    )
+    rag_notes = collect_rag_notes(picked, max_chars=1400, debug=debug)
 
-    user = (
-        "[RAG NOTES]\n" + (rag_notes or "(none)") + "\n\n"
-        "QUESTION:\n" + question
-    )
+    # 語言判斷（偵測中文 → 用繁中；否則用使用者語言）
+    force_zh = bool(re.search(r"繁體|正體|繁體中文", question)) or bool(re.search(r"[\u4e00-\u9fff]", question))
+    sysrule = _sysrule_explain(force_zh)
+    user = "[RAG NOTES]\n" + (rag_notes or "(none)") + "\n\nQUESTION:\n" + question
 
     if debug:
         print("[DEBUG] explain | LLM(single-pass) entering")
 
-    txt = run_llm(llm, [
-        {"role": "system", "content": sysrule},
-        {"role": "user", "content": user}
-    ], timeout=600.0) or ""
+    txt = run_llm(llm, [{"role":"system","content":sysrule},
+                        {"role":"user","content":user}], timeout=600.0) or ""
 
-    # 清理不該出現的記號 / 程式碼
-    def _strip_controls(s: str) -> str:
-        s = re.sub(r'```[\s\S]*?```', ' ', s)        # 移除 code fences
-        s = re.sub(r'<<<[^>]+>>>', ' ', s)            # 移除 one-pass 控制標記
-        s = re.sub(r'\{+\s*explain\s*\}+', ' ', s, flags=re.I)  # 移除 {explain}
-        return re.sub(r'\s+', ' ', s).strip()
-
-    ans = _strip_controls(txt)
-
+    s = _clean_explain_text_md(txt)
     if debug:
-        print(f"[DEBUG] explain | raw chars={len(txt)}, cleaned chars={len(ans)}")
+        print(f"[DEBUG] explain | raw chars={len(txt)}, cleaned chars={len(s)}")
 
-    # 本地降級（不再呼叫 LLM 第二次）
-    if not ans:
-        if debug:
-            print("[DEBUG] explain | empty → local degrade summary")
-        # 盡可能從 RAG 筆記抽出純文字段落
-        raw = rag_notes or ""
-        # 去掉任何 ``` 區塊
-        raw = re.sub(r'```[\s\S]*?```', ' ', raw)
+    if not s:
+        # 保底：直接輸出精簡的 notes 摘要（不再二次詢問 LLM）
+        raw = re.sub(r'```[\s\S]*?```', ' ', rag_notes or "")
         raw = re.sub(r'\s+', ' ', raw).strip()
-        ans = raw[:600] or "（無可用參考摘要）"
+        s = raw or "（無可用參考摘要）"
+    return s
 
-    return ans
 
 def _render_history_for_llm(history: Optional[List[Tuple[str, str]]],
                             max_pairs: int = 3,
@@ -1502,63 +1570,69 @@ def _best_title(hit: dict, idx: int, default: str = "") -> tuple[str, str]:
     title = default or f"{htype} #{idx+1}"
     return title, "fallback"
 
-def rerank_and_diversify_hits(hits: list,
-                              query: str,
-                              prefer_map: bool=False,
-                              intent_hint: Optional[str]=None,
-                              debug: bool=False) -> list:
+def rerank_and_diversify_hits(
+    hits: list,
+    query: str | None = None,
+    intent: Optional[str] = None,
+    topk: Optional[int] = None,
+    debug: bool = False
+) -> list:
     """
-    輕量 re-rank + diversify：
-    - 不改 query_qdrant 回傳結構
-    - 'explain' 時降低純 code/api 的比重、提昇 web/guide；'code' 或 None 則保持中性
-    - 多樣性去重仍用 (doc_id or canonical_url or title_normalized)
+    輕量 re-rank + diversify（單一權威版本）：
+    - intent in {"code","explain", None}：explain 時微調提升 web/guide，code 維持中性
+    - query 目前只做輕度關鍵詞比對（保留擴充空間）
+    - topk 若提供，最後裁切到該長度
     """
     if not hits:
         return []
 
-    # 初步打分（溫和，避免「硬」偏向）
     scored = []
     ql = (query or "").lower()
+
     for h in hits:
         base = 1.0
-        dt = (h.get("payload", {}).get("doc_type") or "").lower()
-        title = (h.get("payload", {}).get("title") or h.get("title") or "").lower()
+        p = (h.get("payload") or {})
+        dt = (p.get("doc_type") or "").lower()
+        title = (p.get("title") or h.get("title") or "").lower()
 
-        # 根據意圖微調（非硬性 doc_type 加分）
-        if intent_hint == "explain":
-            if dt in ("web_article", "cli_tool_guide"):
+        # 意圖微調（溫和）
+        if intent == "explain":
+            if dt in ("web_article", "cli_tool_guide", "manual", "faq"):
                 base += 0.35
             elif dt in ("api_spec", "code_snippet", "code_example"):
                 base -= 0.15
-        elif intent_hint == "code":
-            # 保持中性；不特別加分，避免你前述的雙重偏向
-            pass
+        # intent == "code"：不特別加或扣，避免雙重偏向
 
-        # 頂多再加上一點 query 字面相關性
-        if any(k in title for k in ["enso", "marine heatwave", "nino", "mhw"]):
+        if any(k in title for k in ("enso", "marine heatwave", "nino", "mhw")):
             base += 0.1
 
         scored.append((base, h))
 
-    # 排序
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # 多樣性去重（以 doc_id 或 canonical_url 或標題歸一）
-    seen = set()
-    out = []
-    for s, h in scored:
+    # 多樣性去重
+    seen, out = set(), []
+    def _key(h):
         p = h.get("payload") or {}
-        key = p.get("doc_id") or p.get("canonical_url") or (p.get("title") or h.get("title") or "").split(" — ")[0].strip().lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(h)
+        return (
+            p.get("doc_id")
+            or p.get("canonical_url")
+            or (p.get("title") or h.get("title") or "").split(" — ")[0].strip().lower()
+            or p.get("source_file")
+            or "blob::" + str(hash(h.get("content") or h.get("text") or ""))
+        )
+    for s, h in scored:
+        k = _key(h)
+        if k in seen: continue
+        seen.add(k); out.append(h)
 
-    # 控制輸出長度（不改動原來 topk 的行為，這裡僅保守留原順序）
+    if isinstance(topk, int) and topk > 0:
+        out = out[:topk]
+
     if debug:
         from collections import Counter
-        c = Counter((h.get("payload", {}).get("doc_type") or h.get("doc_type") or "n/a") for h in out)
-        print(f"[DEBUG] rerank/diversify intent={intent_hint!r} → type mix: {c}")
+        c = Counter(( (h.get("payload") or {}).get("doc_type") or "n/a").lower() for h in out)
+        print(f"[DEBUG] rerank/diversify intent={intent!r} → type mix: {c}")
 
     return out
 
@@ -1723,6 +1797,47 @@ def _norm_cite_key(payload: dict) -> str:
         key = _stem(t)
     return key
 
+def _dedup_key_from_hit(h: dict) -> str:
+    """為 hits 做去重用的 key，優先順序：canonical_url -> doc_id -> title(normalized) -> source_file/name。"""
+    p = (h.get("payload") or {})
+    url = (p.get("canonical_url") or "").strip().lower()
+    if url:
+        return f"url::{url}"
+    did = (p.get("doc_id") or "").strip().lower()
+    if did:
+        return f"id::{did}"
+    title = (p.get("title") or p.get("name") or "").strip().lower()
+    if title:
+        # 與 format_citations 的策略一致：去掉「 — 後面的路徑」再小寫
+        title = re.split(r"\s+—\s+", title, maxsplit=1)[0].strip().lower()
+        return f"title::{title}"
+    src = (p.get("source_file") or "").strip().lower()
+    if src:
+        return f"src::{src}"
+    # 毫無可用 meta 時，退回 content hash
+    content = (h.get("content") or h.get("text") or "")
+    return "blob::" + str(hash(content))  # 避免爆雷，弱去重
+
+def _union_dedup_hits(primary: list, extra: list, limit: int | None = None, debug: bool = False) -> list:
+    """把 primary 和 extra 聯集後依照 primary 優先、extra 次之做去重；可選上限 limit。"""
+    seen, out = set(), []
+    def push(seq):
+        for h in (seq or []):
+            k = _dedup_key_from_hit(h)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(h)
+            if isinstance(limit, int) and limit > 0 and len(out) >= limit:
+                break
+    push(primary)
+    if not (isinstance(limit, int) and limit > 0 and len(out) >= limit):
+        push(extra)
+    if debug:
+        kinds = [(h.get("payload", {}) or {}).get("doc_type", "n/a").lower() for h in out]
+        print(f"[DEBUG] union hits count={len(out)}; type mix after union: {Counter(kinds) or 'n/a'}")
+    return out
+
 def format_citations(hits: list[dict], question: str) -> str:
     """
     以標題 — 連結的清單輸出，並做更強的去重：
@@ -1799,92 +1914,104 @@ def static_guard_check(code: str, oas: Dict[str,Any], expect_csv: bool, expect_m
 
     return True, ""
 
+def prepare_rag_for_one_pass(
+    base_hits: list,
+    question: str,
+    topk: int = 6,
+    debug: bool = False
+) -> list:
+    """保持原 base_hits 不動；另外跑一輪 rerank/diversify（code 與 explain），再做聯集去重。"""
+    # 先裁到 topk（維持你的主要邏輯）
+    primary = list(base_hits[:topk]) if isinstance(topk, int) and topk > 0 else list(base_hits)
+
+    # 嘗試各自意圖的 rerank；失敗就回空列
+    def _safe_rerank(intent: str, k: int) -> list:
+        try:
+            return rerank_and_diversify_hits(primary, query=question, intent=intent, topk=max(2, k), debug=debug)
+        except Exception:
+            if debug:
+                print(f"[DEBUG] rerank/diversify failed for intent='{intent}', fallback to [].")
+            return []
+
+    # 兩種意圖都做，因為 one-pass 會在同一次 LLM 內自行判斷 MODE
+    r_code = _safe_rerank("code", topk//2 or 3)
+    r_expl = _safe_rerank("explain", topk//2 or 3)
+
+    if debug:
+        kinds_primary = Counter([(h.get("payload") or {}).get("doc_type","n/a").lower() for h in primary])
+        kinds_code    = Counter([(h.get("payload") or {}).get("doc_type","n/a").lower() for h in r_code])
+        kinds_expl    = Counter([(h.get("payload") or {}).get("doc_type","n/a").lower() for h in r_expl])
+        print(f"[DEBUG] prepare one-pass | primary mix={kinds_primary or 'n/a'}")
+        print(f"[DEBUG] prepare one-pass | rerank(code) mix={kinds_code or 'n/a'}")
+        print(f"[DEBUG] prepare one-pass | rerank(explain) mix={kinds_expl or 'n/a'}")
+
+    # 聯集去重（不在這裡硬設上限，交給 collect_rag_notes 以 max_chars 截斷）
+    union_hits = _union_dedup_hits(primary, r_code + r_expl, limit=None, debug=debug)
+    return union_hits
+
+def _looks_like_complete_code(code: str, debug: bool=False) -> bool:
+    code = _preclean_code_for_parse(code, debug=debug, tag="looks_like")
+    if not code:
+        if debug:
+            print("[DEBUG] Empty code body")
+        return False
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        if debug:
+            print(f"[DEBUG] Not complete code: SyntaxError at line {e.lineno}: {e.msg}")
+        return False
+    if not tree.body:
+        if debug:
+            print("[DEBUG] Empty code body")
+        return False
+
+    # 孤立 import alias 截斷偵測（保留你原先邏輯）
+    imported_aliases = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_aliases.add(alias.asname or alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported_aliases.add(alias.asname or alias.name)
+
+    last_stmt = tree.body[-1]
+    if isinstance(last_stmt, ast.Expr) and isinstance(last_stmt.value, ast.Name) and last_stmt.value.id in imported_aliases:
+        if debug:
+            print("[DEBUG] Not complete code: Isolated import alias at end")
+        return False
+    return True
+
 # --------------------
 # Core
 # --------------------
 def llm_one_pass_decide_plan_and_code(
     question: str,
-    oas: Dict[str, Any],
+    oas: Dict[str,Any],
     rag_notes: str,
     llm: str,
     chunk_line: Optional[str] = None,
-    history: Optional[List[Tuple[str, str]]] = None,
+    history: Optional[List[Tuple[str,str]]] = None,
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> Dict[str,Any]:
     """
-    ONE-PASS：在單一 LLM 回合完成：
-      1) MODE 決策（code / explain）
-      2) 若為 code：產生 PLAN（受 OAS 白名單約束）與完整 Python 單檔腳本
-      3) 若為 explain：輸出純文字解說（嚴禁 placeholder 與 code fence）
-    回傳 dict，可能鍵：
-      - mode: 'code' | 'explain'
-      - plan: dict（僅在 mode=code）
-      - code: str（僅在 mode=code）
-      - explain: str（僅在 mode=explain）
+    單一 LLM：在一次回合中完成 MODE -> PLAN -> CODE 或 EXPLAIN。
+    - 簽名、回傳結構：保持與現有版本一致（回傳 dict，至少包含 mode/code/explain/plan 中之一）。
+    - 解析使用共用 _parse_one_pass_output（與 multi-steps 一致）。
+    - 注入 MHW chunk 通則（_mhw_chunk_general_rule 若存在即採用），並可附帶 chunk_line（若外部已計算）。
+    - 產出 code 時，若未閉合或疑似不完整，觸發一次 code_continue_via_llm。
     """
-    # === 準備共用規則與 RAG/歷史 ===
-    # chunk 規則（若外層沒提供專用 line，使用一般化提示）
-    chunk_general = _mhw_chunk_general_rule() if '_mhw_chunk_general_rule' in globals() else (
-        "When data services limit the temporal span per request, use bounded chunking (monthly/yearly) "
-        "and stitch results with pandas.concat(ignore_index=True)."
-    )
-
-    # 將共用 code 規則注入（讓 one-pass 也遵守 _build_common_code_sysrule）
-    common_rules = (
-        _build_common_code_sysrule(None)
-        if '_build_common_code_sysrule' in globals()
-        else (
-            "- Decide plot type from intent: time series (trend/變化) vs. map (spatial distribution) of a data variable.\n"
-            "- For maps: extract unique-sorted lon/lat from DataFrame → meshgrid(Lon,Lat) → pivot/fill to a 2D array Z → "
-            "  matplotlib.pyplot.pcolormesh(Lon,Lat,Z, shading='auto'); treat 'level' as categorical with "
-            "  matplotlib.colors.ListedColormap.\n"
-            "- Never invent endpoints/params/columns; only use OAS whitelisted items and columns present in df.\n"
-            "- Prefer bounded for-loops for chunking; avoid open-ended while loops.\n"
-            "- Include only actually-used imports; exclude unused ones."
-        )
-    )
-
-    notes = (rag_notes or "").strip()
-    hist_text = _render_history_for_llm(history, max_pairs=3, max_chars=800) if '_render_history_for_llm' in globals() else ""
-
-    # OAS 白名單
-    paths = (oas.get("paths") or [])[:]
-    params = (oas.get("params") or [])[:]
-    append_allowed = (oas.get("append_allowed") or [])[:]
-
-    # === System 規則（嚴格格式 + OAS + 繪圖與 append 規則 + chunk 規則）===
-    sys_lines = [
+    # 4) 組合 one-pass sysrule（含分類→規劃→產碼 / 解說）
+    # chunk_line = chunk_line or _mhw_chunk_general_rule() # move to caller
+    sysrule_lines = [
         "You are a planner-and-coder in ONE pass.",
-        "Decide MODE first:",
-        "- Output 'explain' when the user asks to explain/define/compare/describes something, or explicitly says NOT to use code.",
-        "- Output 'code' only when the user asks for code/script/programmatic steps/API calls/downloads/plotting, or to continue/complete code.",
-        "",
-        "If MODE=code:",
-        "1) Produce a PLAN strictly within the OAS whitelists below (choose exactly ONE endpoint and a params dict).",
-        "   OAS WHITELISTS:",
-        f"   - paths: {paths}",
-        f"   - params: {params}",
-        f"   - append allowed: {append_allowed}",
-        "",
-        "   Spatial guidance:",
-        "   - Prefer a bbox (two distinct values per axis); never default to global extent (no lon:-180..180 / lat:-90..90).",
-        "   - Do NOT define longitude ranges that directly cross 180° or 0°; instead split into two valid ranges and merge results.",
-        "   - Whitelisted spatial params MUST NOT be left blank.",
-        "",
-        "   Temporal guidance:",
-        "   - Set 'start'/'end' precisely (YYYY-MM-DD).",
-        "   - If a single month map is asked, fetch once (no loop).",
-        "   - If a single year is asked, you may deduce a 12-month span.",
-        "",
-        "   Query parameter - 'append' guidance (e.g., using ODB MHW API):",
-        "   - Include ALL user-requested variables in 'append' IF (and only if) 'append' exists and values are allowed by OAS.",
-        "   - For MHW level maps include 'level' (if allowed). For anomaly requests include 'sst_anomaly' (if allowed).",
-        "   - Do NOT leave 'append' empty or undefined when variables are clearly required by the task.",
-        "",
-        "2) After the PLAN, produce a SINGLE runnable Python script that follows these rules:",
-        common_rules,
-        (chunk_line or f"Chunking note: {chunk_general}"),
-        "- IMPORTANT: Write a COMPLETE single-file script. Do NOT leave unfinished fences or TODOs. If plotting, call plt.show() at the end.",
+        # ← 把判斷/圖型/append/OAS 的規則全部接進來（單一來源）
+        _sysrule_classifier(),
+        _sysrule_spatial_temporal_guidance(),
+        _sysrule_append_guidance(oas),
+        _sysrule_oas_whitelist(oas),
+        _build_common_code_sysrule(chunk_line), 
         "",
         "STRICT OUTPUT FORMAT:",
         "<<<MODE>>>{code|explain}<<<END>>>",
@@ -1892,92 +2019,75 @@ def llm_one_pass_decide_plan_and_code(
         "<<<PLAN>>>{ \"endpoint\": \"/api/...\", \"params\": { ... } }<<<END>>>",
         "<<<CODE python>>>",
         "<single runnable script>",
-        "<<<END>>>",
-        "",
-        "If MODE=explain: output ONLY a concise explanation paragraph(s) without code fences or placeholders; DO NOT output '{explain}'.",
+        "<<<END>>>"
     ]
-    sysrule = "\n".join(sys_lines)
+    sysrule = "\n".join(sysrule_lines)
 
-    # === User 內容（RAG + 歷史 + 問題）===
+    # 5) USER：RAG 節錄 +（可選）歷史 + 問題
+    hist_text = _render_history_for_llm(history, max_pairs=3, max_chars=800)
     user_parts = []
-    if notes:
-        user_parts.append(notes)
+    if rag_notes:
+        user_parts.append(rag_notes)
     if hist_text:
         user_parts.append("HISTORY (condensed):\n" + hist_text)
     user_parts.append("QUESTION:\n" + question)
-    user_msg = "\n\n".join(user_parts)
+    user = "\n\n".join(user_parts)
 
     if debug:
         print("[DEBUG] one-pass(core) | entering")
-        if chunk_line:
-            print(f"[DEBUG] one-pass(core) | chunk_line injected")
         if hist_text:
             print(f"[DEBUG] one-pass(core) | history injected chars={len(hist_text)}")
         print("[DEBUG] use one-pass LLM")
 
-    txt = run_llm(llm, [
-        {"role": "system", "content": sysrule},
-        {"role": "user", "content": user_msg},
-    ], timeout=600.0) or ""
+    # 6) 呼叫一次 LLM
+    txt = run_llm(llm, [{"role": "system", "content": sysrule},
+                        {"role": "user", "content": user}], timeout=600.0) or ""
 
-    # === 解析 MODE ===
-    m_mode = re.search(r'<<<MODE>>>\s*(code|explain)\s*<<<END>>>', txt, flags=re.IGNORECASE)
-    mode = (m_mode.group(1).lower() if m_mode else "explain")
+    # 7) 解析（共用解析器）
+    op = _parse_one_pass_output(txt, debug=debug)
+    # 產生 txt → _parse_one_pass_output(txt) 得 plan/code 後：
+    mode = op.get("mode") or "explain"
+    plan = op.get("plan")
+    code = op.get("code") or ""
 
-    # === explain 模式：輸出純文字 ===
+    if debug:
+        print(f"[DEBUG] one-pass(core) | decided mode={mode} | plan={'yes' if plan else 'no'} | code_len={len(code)}")
+
     if mode != "code":
-        # 優先剝除控制記號/placeholder/程式碼
-        def _strip_controls(s: str) -> str:
-            s = re.sub(r'```[\s\S]*?```', '', s)                   # 去 code fence
-            s = re.sub(r'<<<[^>]+>>>', ' ', s)                     # 去 one-pass 控制記號
-            s = re.sub(r'\{+\s*explain\s*\}+', ' ', s, flags=re.I) # 去 {explain}
-            return re.sub(r'\s+', ' ', s).strip()
-
-        # 若模型用了 <<<EXPLAIN>>> 區塊，也能解析
-        m_ex = re.search(r'<<<EXPLAIN>>>\s*([\s\S]*?)\s*<<<END>>>', txt, flags=re.IGNORECASE)
-        explain_text = _strip_controls(m_ex.group(1)) if m_ex else _strip_controls(txt)
-
+        # explain 模式直接返回，不做任何 code 檢查/續寫
         if debug:
-            print("[DEBUG] one-pass(core) | success=explain")
-        return {"mode": "explain", "explain": explain_text}
-
-    # === code 模式：解析 PLAN ===
-    m_plan = re.search(r'<<<PLAN>>>\s*([\s\S]*?)\s*<<<END>>>', txt, flags=re.IGNORECASE)
-    plan: Optional[Dict[str, Any]] = None
-    if m_plan:
-        try:
-            plan = json.loads(m_plan.group(1))
-        except Exception:
-            plan = None
-
-    # === 解析 CODE（移除控制記號；盡量一次寫完，必要時續寫一次）===
-    m_code = re.search(r'<<<CODE\s+python>>>\s*([\s\S]*?)\s*<<<END>>>', txt, flags=re.IGNORECASE)
-    raw_code = m_code.group(1) if m_code else txt
-    code = extract_code_from_markdown(raw_code).strip() or _strip_one_pass_markers(raw_code)
-
-    # 未閉合或 AST 不完整 → 續寫一次
-    unclosed = ("```" in (raw_code or "")) and not re.search(r"```(?:python|py)?\s*[\s\S]*?```", raw_code, flags=re.IGNORECASE)
-    looks_ok = _looks_like_complete_code(code, debug=debug)
-    if unclosed or (not looks_ok):
+            print("[DEBUG] one-pass(core) | decided mode=explain → no code path, no continuation")
+        return {"mode": "explain", "explain": op.get("explain", ""), "raw": op.get("raw", "")}
+    
+    # 若沒有拿到任何 code，就不要觸發續寫（避免 Empty code body 連環觸發）
+    if not code.strip():
         if debug:
-            print("[DEBUG] one-pass(core) | code incomplete → try single continuation")
+            print("[DEBUG] one-pass(core) | no code extracted → return to caller (let fallback decide)")
+        return {"mode":"code","plan": plan, "code": ""}
+
+    # 確有 code → 再判斷是否需要續寫（用清理後的版本）
+    clean_for_check = _preclean_code_for_parse(extract_code_from_markdown(code).strip() or code, debug=debug, tag="one_pass_check")
+    unclosed_fence = ("```" in code) and not re.search(r"```(?:python|py)?\s*[\s\S]*?```", code, flags=re.I)
+    need_continue = (not _looks_like_complete_code(clean_for_check, debug=debug)) or unclosed_fence
+
+    if need_continue:
+        if debug:
+            print(f"[DEBUG] one-pass: need continuation. Current code text: {code}")
         more = code_continue_via_llm(
-            question="請從上段未完成處繼續，補足缺漏行，完成繪圖與收尾，不要重複前段程式碼，但保持縮排正確一致。",
+            question="請從上段未完成處繼續，補齊缺漏，完成資料抓取與繪圖收尾，不要重複前段程式碼，保持縮排一致。",
             plan=(plan or {}),
             last_code=code,
             llm=llm,
-            debug=debug
+            debug=debug,
+            chunk_line=chunk_line,
+            oas=oas
         )
         if more:
-            code = code.rstrip() + "\n\n# === 以下為續寫段（請接續貼在上段之後）===\n" + more.lstrip()
+            # code = (code.rstrip() + "\n\n" + more.lstrip()).strip()
+            code = merge_code_fences(code.rstrip() + "\n\n", more.lstrip())
 
-    # 最終清理殘留控制記號
-    code = _strip_one_pass_markers(code)
-
-    if debug:
-        print("[DEBUG] one-pass(core) | success=code")
-
-    return {"mode": "code", "plan": plan or {}, "code": code}
+    op["code"] = code
+    return op
 
 def answer_once(
     question: str,
@@ -1995,27 +2105,23 @@ def answer_once(
     # 1) RAG
     hits = query_qdrant(question, debug=debug)
     globals()["LAST_HITS"] = hits
-
-    # 裁切到 topk（不更動 query_qdrant 的簽名/行為）
     if isinstance(topk, int) and topk > 0 and len(hits) > topk:
         hits = hits[:topk]
-
     if debug:
         kinds = [(h.get("payload", {}) or {}).get("doc_type", "n/a").lower() for h in hits]
         print(f"[DEBUG] RAG hits total: {len(hits)}; type distribution: {Counter(kinds) or 'n/a'}")
 
-    # 2) OAS 白名單
+    # 2) OAS
     oas_info = harvest_oas_whitelist(hits, debug=debug)
+    _set_oas_cache(oas_info)
+
+    # 3) RAG 摘要 —— one-pass 使用「原始 hits ∪ rerank(code) ∪ rerank(explain)」
+    hits_for_one_pass = prepare_rag_for_one_pass(hits, question, topk=topk, debug=debug)
     if debug:
-        print(f"[DEBUG] OAS paths found: {oas_info.get('paths')}")
-        print(f"[DEBUG] OAS params: {oas_info.get('params')}")
-        if oas_info.get("append_allowed"):
-            print(f"[DEBUG] OAS append allowed: {oas_info.get('append_allowed')}")
+        print(f"[DEBUG] RAG for one-pass: {len(hits_for_one_pass)} candidates after union (base+rerank).")
+    rag_notes = collect_rag_notes(hits_for_one_pass, max_chars=1400, debug=debug)
 
-    # 3) RAG 摘要（不改簽名）
-    rag_notes = collect_rag_notes(hits, max_chars=1000, debug=debug)
-
-    # 4) ctx_only：只輸出 context/規則（方便檢視）
+    # 4) ctx only
     if ctx_only:
         chunk_line = None
         sysrule_preview = _build_common_code_sysrule(chunk_line)
@@ -2044,14 +2150,10 @@ def answer_once(
         ]
         return "\n".join(preview)
 
-    # 5) one-pass 快速路徑（僅二選一：通過就走 one-pass；否則完全走 multi-step）
-    gate_flag = should_single_pass(question, oas_info, hits, debug=debug)
-    env_flag = (os.getenv("SINGLE_PASS", "0") == "1")
-    use_single = bool(env_flag or gate_flag)
-    if debug:
-        print(f"[DEBUG] one-pass gate: env={env_flag} | should_single_pass={gate_flag} → use_single={use_single}")
-
-    if force_mode is None and use_single:
+    # 5) 決定管線：預設 One-Pass；若設 MULTI_STEPS=1 才走舊管線
+    force_multi = (os.getenv("MULTI_STEPS", "0") == "1")
+    init_chunk_line = _mhw_chunk_general_rule()
+    if not force_multi:
         if debug:
             print("[DEBUG] path=one-pass | entering")
         op = llm_one_pass_decide_plan_and_code(
@@ -2059,25 +2161,25 @@ def answer_once(
             oas=oas_info,
             rag_notes=rag_notes,
             llm=llm,
-            chunk_line=None,
+            chunk_line=init_chunk_line,
             history=history,
             debug=debug
         )
-        # one-pass → explain
-        if op.get("mode") == "explain" and op.get("explain"):
+        if debug and op.get("mode") == "code" and op.get("code")=="":
+           print("[DEBUG] one-pass | code missing → fallback to multi-step codegen")
+
+        if op.get("mode") == "explain":
             if debug:
                 print("[DEBUG] path=one-pass | success=explain")
             cites = format_citations(hits, question)
             return f"{op['explain']}\n\n=== 參考資料 ===\n{cites}"
 
-        # one-pass → code
         if op.get("mode") == "code" and (op.get("plan") and op.get("code")):
             ok, msg = validate_plan(op["plan"], oas_info)
             if debug and not ok:
                 print(f"[DEBUG] one-pass plan invalid: {msg} — falling back to multi-step.")
             else:
                 code = op["code"]
-                # 一次完整檢查；不完整時只續寫一次（沿用你現有續寫）
                 if not _looks_like_complete_code(code, debug=debug):
                     if debug:
                         print("[DEBUG] one-pass code incomplete → try single continuation")
@@ -2086,11 +2188,13 @@ def answer_once(
                         plan=op["plan"],
                         last_code=code,
                         llm=llm,
-                        debug=debug
+                        debug=debug,
+                        chunk_line=init_chunk_line,
+                        oas=oas_info
                     )
                     if more:
-                        code = code.rstrip() + "\n\n" + more.lstrip()
-                ok2, msg2 = static_guard_check(code, oas_info, expect_csv=False, expect_map=False) #deprecated: is_map_intent(question))
+                        code = merge_code_fences(code.rstrip() + "\n\n", more.lstrip())
+                ok2, msg2 = static_guard_check(code, oas_info, expect_csv=False, expect_map=False)
                 if debug and not ok2:
                     print(f"[DEBUG] one-pass code violates guard: {msg2} — falling back to multi-step.")
                 else:
@@ -2100,11 +2204,11 @@ def answer_once(
                     globals()["LAST_CODE_TEXT"] = code
                     return f"{code}\n\n=== 參考資料 ===\n{cites}"
 
-        # 若 one-pass 未產出可用結果 → 改走 multi-step（不再於 explain 另外跑一次 one-pass）
+        # One-Pass 未能產出可用結果 → 退回 Multi-Steps（debug/除錯用）
         if debug:
             print("[DEBUG] path=one-pass | fallback to multi-step")
 
-    # ====== Multi-step（僅此一路；不再做 one-pass-explain） ======
+    # ====== Multi-Steps（僅當 MULTI_STEPS=1 或 one-pass 失敗時） ======
     if debug:
         print("[DEBUG] path=multi-step | entering")
     mode = force_mode or llm_choose_mode(question, llm=llm)
@@ -2112,40 +2216,42 @@ def answer_once(
         print(f"[DEBUG] mode: {mode} (csv_requested=False)")
 
     if mode == "explain":
+        last_code = globals().get("LAST_CODE_TEXT") or ""
+        if last_code and re.search(r"(解釋|說明).*(程式|code)|加.*註解|comment", question, flags=re.I):
+            if debug:
+                print("[DEBUG] explain->annotate | use Continue LLM to add comments")
+            annotated = code_continue_via_llm(
+                question="請在現有程式碼中加入中文註解，逐段解釋每個步驟與參數的用途，保持原有程式不變並僅加註解。",
+                plan=prev_plan or {},
+                last_code=last_code,
+                llm=llm,
+                debug=debug,
+                chunk_line=init_chunk_line,
+                oas=oas_info
+            ) or ""
+            if annotated.strip():
+                cites = format_citations(hits, question)
+                return f"{annotated}\n\n=== 參考資料 ===\n{cites}"
+
         ans = explain_via_llm(question, hits, llm=llm, debug=debug)
         cites = format_citations(hits, question)
         if debug:
             print("[DEBUG] path=multi-step | success=explain")
         return f"{ans}\n\n=== 參考資料 ===\n{cites}"
 
-    # code mode → plan（維持你現有 working 行為與 chunk 規則）
+    # mode == code
     plan = llm_json_plan(
         question, oas_info, llm=llm, prev_plan=prev_plan,
-        user_append_hints=None,  # 依你目前版本，不用 infer_user_append_hints
-        csv_requested=False, debug=debug
+        user_append_hints=None, csv_requested=False, debug=debug
     )
     plan = inherit_from_prev_if_reasonable(plan, prev_plan, oas_info, csv_requested=False, debug=debug)
 
     ok, msg = validate_plan(plan, oas_info)
     if debug and not ok:
         print(f"[DEBUG] Plan invalid@second: {msg}")
-    '''
-    # MHW 的分段提示（如果命中）
-    chunk_hint = mhw_span_hint(plan)
-    chunk_line = None
-    if chunk_hint:
-        if chunk_hint["mode"] == "monthly":
-            chunk_line = ("因為此 BBox 超過 90°×90°，依 OAS 只能查 1 個月。\n"
-                          "你必須以「逐月分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
-        elif chunk_hint["mode"] == "yearly":
-            chunk_line = ("因為此 BBox 超過 10°×10°，依 OAS 只能查 1 年。\n"
-                          "你必須以「逐年分段」迴圈抓取，將每段結果以 pandas.concat 串聯。")
-        elif chunk_hint["mode"] == "decade":
-            chunk_line = ("此 BBox 在 10°×10° 以內，依 OAS 最長 10 年。\n"
-                          "若時間區間超過 10 年，你必須以「每 10 年」或「逐年」分段，最後以 pandas.concat 串聯。")
-    ''' 
-    code = code_from_plan_via_llm(question, plan, llm=llm, debug=debug) or ""
-    ok2, msg2 = static_guard_check(code, oas_info, expect_csv=False, expect_map=False) #deprecated: is_map_intent(question))
+
+    code = code_from_plan_via_llm(question, plan, llm=llm, debug=debug, chunk_line=build_chunk_line_from_plan(plan), oas=oas_info) or ""
+    ok2, msg2 = static_guard_check(code, oas_info, expect_csv=False, expect_map=False)
     if not ok2 and debug:
         print(f"[DEBUG] Code violates guard: {msg2}")
 
@@ -2155,11 +2261,9 @@ def answer_once(
         print("[DEBUG] path=multi-step | success=code")
     return f"{code}\n\n=== 參考資料 ===\n{cites}"
 
-
 # --------------------
 # CLI
 # --------------------
-
 def main():
     ap = argparse.ArgumentParser(description="ODBchat RAG CLI")
     ap.add_argument("question", nargs="?", help="要問的問題")
@@ -2171,6 +2275,7 @@ def main():
     ap.add_argument("--debug", action="store_true", default=False)
     ap.add_argument("--ctx", action="store_true", default=False, help="只輸出 prompt（檢查 context 用）")
     ap.add_argument("--chat", action="store_true", default=False, help="互動模式")
+    ap.add_argument("--multi-steps", action="store_true", default=False, help="強制使用舊式多步驟管線（除錯用）")
     args = ap.parse_args()
 
     if not args.question and not args.chat:
@@ -2178,6 +2283,8 @@ def main():
         return
 
     history: List[Tuple[str,str]] = []
+    if args.multi_steps:
+        os.environ["MULTI_STEPS"] = "1"
 
     if args.chat:
         print("進入互動模式（輸入 /exit 離開）")
