@@ -4,6 +4,12 @@ wget -O google_gemma-3-4b-it-Q4_K_M.gguf https://huggingface.co/bartowski/google
 # gemma3:12b
 wget -O google_gemma-3-12b-it-Q8_0.gguf https://huggingface.co/bartowski/google_gemma-3-12b-it-GGUF/resolve/main/google_gemma-3-12b-it-Q8_0.gguf
 
+# gemma3:27b
+wget https://huggingface.co/bartowski/google_gemma-3-27b-it-qat-GGUF/resolve/main/google_gemma-3-27b-it-qat-Q6_K.gguf
+
+# gpt-oss:20b 
+wget https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/openai_gpt-oss-20b-Q6_K_L.gguf
+
 # huggingface_hub cli cannot work
 # python -m pip install -U "huggingface_hub[cli]"
 # python -m huggingface_hub download bartowski/google_gemma-3-4b-it-GGUF --include "google_gemma-3-4b-it-Q4_K_M.gguf" --local-dir ./models

@@ -47,8 +47,8 @@ COLLECTION     = os.environ.get("QDRANT_COL", "odb_mhw_knowledge_v1")
 EMBED_MODEL    = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
 
 OLLAMA_URL     = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
-OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "600"))
+OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:27b") #gemma3:4b #"gpt-oss:20b"
+OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "720"))
 
 LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8001/completion")
 LLAMA_TIMEOUT  = float(os.environ.get("LLAMA_TIMEOUT", "300"))
@@ -721,20 +721,25 @@ def _sysrule_classifier() -> str:
     return (
         "MODE classifier:\n"
         "- Decide one token: 'code' or 'explain'.\n"
-        "- Output 'code' only if the user clearly asks for code/script/programmatic steps, plotting, API calls/downloads, or to continue/complete previous code.\n"
+        "- Output 'code' if the user clearly asks for code/script/programmatic steps, plotting, API calls/downloads, or to continue/complete/follow up/revise previous code.\n"
         "- If the question contains negative phrases like 'without code', '不用程式', '不要 code', '不需寫程式', '不用 API', '除了程式以外', choose 'explain'.\n"
         "- Favor 'explain' when they ask to explain/define/list/compare/描述/解釋 without requesting code.\n"
     )
 
-def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
+def _sysrule_planner(oas_info: Dict[str, Any], debug: bool=True) -> str:
     allowed_paths  = ", ".join(sorted(oas_info.get("paths", []))) or "(none)"
     allowed_params = ", ".join(sorted(oas_info.get("params", []))) or "(none)"
-    allowed_append = ", ".join(sorted(oas_info.get("append", []))) or "(none)"
+    allowed_append = ", ".join(sorted(oas_info.get("append_allowed", []))) or "(none)"
+    append_usage = f"Allowed values: {allowed_append}" if allowed_append and allowed_append != "(none)" else "Not allowed" 
+    if debug:
+        print(f"[DEBUG] planner append usage: {append_usage}")
+
     return (
         "API planner rules:\n"
         "- Never invent endpoints or params; use ONLY the OAS whitelist.\n"
         f"(1) Allowed endpoints: {allowed_paths}\n"
         f"(2) Allowed query params: {allowed_params}\n"
+        f"(3) 'append' param {append_usage}\n\n"
         "CSV / JSON selection:\n"
         "- Prefer JSON if the user didn't explicitly ask CSV/file download.\n"
         "- For CSV: choose '/csv' endpoint if present; otherwise ONLY if 'format' param enum includes 'csv', set format='csv'.\n\n"
@@ -742,55 +747,88 @@ def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
         "- If region (bbox) or place (single point) implied, estimate a most relevant spatial range or constraint for that region/place.\n"
         "- Never global extent by default (no lon:-180..180, lat:-90..90).\n"
         "- Never crossing longitude 180°/0° in one box; if intended, plan split ranges (merging is done in code stage).\n\n"
-        "Temporal guidance (only whitelisted param names, e.g., start/end):\n"
+        "Temporal params guidance (only whitelisted param names, e.g., start/end):\n"
         "- If the question implies a year, translate to a 12-month range.\n"
         "- If it implies a month/day (e.g., map on a date), set a tight monthly/daily window.\n"
         "- Use ISO dates (YYYY-MM-DD).\n\n"
-        "Query parameter: 'append' guidance (for data variables):\n"
-        f"- If 'append' exists and requested variables are among: {allowed_append}, include ALL relevant ones (comma-separated).\n"
-        "- Infer requested variables from intent: e.g. SST/海水表面溫度: 'sst', anomaly/距平值: 'sst_anomaly', 海洋熱浪等級: 'level'.\n\n"
-        "MHW chunking constraints (planner awareness):\n"
+        "Param: 'append' guidance (if whitelisted and values allowed):\n"
+        f"- Allowed values in 'append': {allowed_append} are used for variables selection as API fetching data\n"
+        "- Decide and infer requested variables from intent, for examples:\n"
+        "  • 海溫/SST（未提 anomaly）→ include 'sst' (or 'temperature', depends on which is allowed)\n"
+        "  • 距平值/異常值/anomaly → include 'sst_anomaly' (if allowed)\n"
+        "  • 海洋熱浪等級/MHW levels → include 'level' (if allowed)\n"
+        "- If analysis/plotting requires variables and 'append' is whitelisted, DO NOT leave 'append' empty in the PLAN JSON; include ALL required variables (comma-separated) strictly from whitelist.\n\n"
+        "MHW chunking constraints (planner awareness, and decide now for CODE to implement):\n"
         "- API max span depends on bbox size (<=10°: up to 10y; >10°: 1y; >90°: 1m). You just plan ONE canonical request; "
-        "  actual looping/concat is implemented in the CODE stage.\n\n"
-        "Inheritance:\n"
-        "- If a previous plan is provided, inherit values unless the new question explicitly asks to change them.\n"
-        'Return JSON only: { "endpoint": "<path>", "params": { "<param>": "<value>" } }\n'
+        "  actual looping/concat is implemented in the CODE stage.\n"
+        "- If the chosen endpoint is '/api/mhw' or '/api/mhw/csv' (i.e. use MHW API), DECIDE the chunking strategy now and include it in the PLAN JSON as a top-level field 'chunk_rule'.\n"
+        "  Use one of the following concise instructions (do NOT put into params):\n"
+        "    • 'monthly'  (bbox>90° × 90° → loop monthly & concat)\n"
+        "    • 'yearly'   (bbox>10° × 10° → loop yearly & concat)\n"
+        "    • 'decade'   (bbox<=10° × 10° & span>10y → split by decade/year & concat)\n"
+        "    • ''         (empty string, if no chunking is required or NOT use MHW API)\n\n"
+        "Plotting decision (decide here for CODE to follow):\n"
+        "- If the question implies plotting:\n"
+        "    • (趨勢/變化/長期/時序/指數/時間/time series) → plot_rule='timeseries'\n"
+        "    • (分佈/地圖/空間/網格/水平分佈/map) → plot_rule='map'\n"
+        "- If no plotting is implied → plot_rule='none' (or empty).\n\n"
+        "Follow-up guidance:\n"
+        "- If usr intent to follow up or revise previous question, do NOT remove constraints/params in previous plan, inherit values, or update them if the new question explicitly asks for altering values.\n"
+        "The PLAN is only a control object for the client; it is NOT user-visible prose. Do not output any text besides the JSON.\n"
+        'Return JSON only: { "endpoint": "<path>", "params": { "<param>": "<value>" }, "chunk_rule": "<monthly|yearly|decade|>", "plot_rule": "<timeseries|map|none|>" }\n'
     )
 
 def _sysrule_code_assistant(chunk_hint_line: str = "", debug: bool=False) -> str:
     base = (
-        "Python code assistant:\n"
-        "- Return ONE runnable Python script only (no prose). Use:\n"
+        "Your are a Python Coder. Your task and coding rules are:\n"
+        "- Task — generate a single runnable Python script (only code, no prose).\n"
+        "- Obey the PLAN JSON at Planner stage exactly:\n"
+        "  • Use the EXACT endpoint and 'params' values from PLAN;\n"
+        "  • If PLAN has 'append', include it verbatim in 'params' (no inventions);\n"
+        "  • NEVER change lon/lat/time ranges unless user asked to;\n"
+        "  • NEVER invent endpoints/params/columns.\n"
+        "- Control keys 'chunk_rule' and 'plot_rule' MUST NOT be sent as query params; they only control client behavior.\n"    
         f"- Use server URL defined in OAS as BASE_URL (e.g., MHW API's BASE_URL = {ECO_BASE_URL})\n"
         "- requests.get(BASE_URL + endpoint, params=params, timeout=60)\n"
         "- JSON responses: r.json() → pd.DataFrame(...). DO NOT use io.StringIO unless CSV.\n"
         "- CSV responses: ONLY if endpoint contains '/csv' OR whitelist allows format='csv', use pandas.read_csv(io.StringIO(r.text)).\n"
         "- If bounding box (lon/lat or lon0/lon1/lat0/lat1) crosses antimeridian/0°, split into two requests and pandas.concat for the two responses.\n"
         "- Convert 'date' to datetime if present.\n"
-        "- If user ask for plotting, decide plot type from intent: timeseries (trend/變化) vs. map (spatial distribution).\n"
-        "- For timeseries plot: use 'date' on x-axis when available; Obey MHW CHUNKING constraints; prefer bounded for-loops for chunking (e.g., for year in range(...)); DO NOT write open-ended while loops.\n" 
-        # "- For maps: pivot_table(index='lat', columns='lon', values=<var>, aggfunc='mean'), meshgrid lon/lat, then pcolormesh.\n"
-        # "- For categorical 'level' maps: use a ListedColormap (e.g., ['#f5c268','#ec6b1a','#cb3827','#7f1416']) with discrete ticks.\n"
-        "- For map plot: build a gridded array aligned to lon/lat and honor the following four rules:\n"
-        "  (1) extract unique sorted lon/lat from df columns (not synthetic linspace) as Lon, Lat;\n"
-        "  (2) create numpy.meshgrid from those unique lon/lat;\n"
-        "  (3) align values to grid cells as Z using either:\n"
-        "      • pivot_table(index='lat', columns='lon', values=<var>, aggfunc='mean'), or\n"
-        "      • explicit fill: create an empty 2D array Z[lat,lon] and fill by iterating df rows to the matching [lat,lon] cell.\n"
-        "  (4) use matplotlib.pyplot.pcolormesh(Lon, Lat, Z, shading='auto') (NEVER use matplotlib.pyplot.scatter).\n"
-        "- Treat 'level' as categorical (if used in 'append' parameter); use a discrete matplotlib.colors.ListedColormap (e.g., ['#f5c268','#ec6b1a','#cb3827','#7f1416']).\n"
-        "- NEVER invent columns; use only those returned by API/examples.\n"
-    )   # <-- Remove this comma to make it a string, not a tuple
-    
-    if debug:
-        print(f"[DEBUG] chunk_hint_line: {chunk_hint_line}")
+        "- Keep indentation exactly consistent with the preceding code block if you are asked to continue code.\n"
+    )
 
-    if chunk_hint_line:
-        base += (
-            "MHW CHUNKING constraints:\n"
-            f"- {chunk_hint_line}\n"
-            "- Split ONLY by time (start/end); keep spatial params fixed; concat at the end.\n"
-        )
+    base += (
+        "- For Plotting behavior, read the PLAN JSON to get the decision ('plot_rule') at Planner stage:\n"
+        "  • If plot_rule=='none' or empty → no plot, just fetch & prepare df.\n"
+        "  • If plot_rule=='timeseries':\n"
+        "      - use 'date' on x-axis; obey MHW CHUNKING constraints; bounded for-loops only; no open-ended while.\n"
+        "  • If plot_rule=='map':\n"
+        "      - build a gridded array aligned to lon/lat (NO scatter). Steps:\n"
+        "        (1) unique sorted lon/lat from df columns (not synthetic linspace);\n"
+        "        (2) create numpy.meshgrid from those unique lon/lat as Lon, Lat;\n"
+        "        (3) align values to grid cells as Z using either pivot_table or explicit fill;\n"
+        "        (4) use matplotlib.pyplot.pcolormesh(Lon, Lat, Z, shading='auto').\n"
+        "- Treat 'level' as categorical when plotting; use a discrete ListedColormap.\n\n"
+    )
+
+    # if debug:
+    #     print(f"[DEBUG] chunk_hint_line: {chunk_hint_line}")
+    # if chunk_hint_line:
+    base += (
+        "Read the PLAN JSON to get the decision ('chunk_rule') of MHW CHUNKING constraints at Planner stage.\n" # general fallback if PLAN has no 'chunk_rule'):\n"
+        # f"- {chunk_hint_line}\n"
+        "- If 'chunk_rule' equals:\n" 
+        "    • 'monthly: API requests should loop monthly and concat'\n"
+        "    • 'yearly: API requests should loop yearly and concat'\n"
+        "    • 'decade: API requests should split by decade or by year and concat'\n"
+        "    • '' (empty string): No chunking is required\n"
+        "- If the PLAN includes a top-level field 'chunk_rule', you MUST implement the described time-splitting loop accordingly (do NOT send 'chunk_rule' as a query param).\n"
+        "- Split ONLY by time (start/end); keep spatial params fixed; concat at the end.\n\n"
+    )
+
+    base += (
+        "Return a runnable Python script within code fence. CODE cannot be empty.\n"         
+    )    
     return base
     
 def _sysrule_explain(force_zh: bool) -> str:
@@ -1890,17 +1928,20 @@ def _grab_block(text: str, tag: str) -> str:
 
 def parse_strict_blocks(text: str) -> Dict[str, str]:
     raw = text or ""
+    def _grab_block(raw_text: str, tag: str) -> str:
+        m = re.search(rf'<<<{tag}>>>\s*([\s\S]*?)\s*<<<END>>>', raw_text, flags=re.IGNORECASE)
+        return (m.group(1) if m else "").strip()
     out = {
         "mode": _grab_block(raw, "MODE"),
         "plan": _grab_block(raw, "PLAN"),
         "code": _grab_block(raw, "CODE"),
         "answer": _grab_block(raw, "ANSWER"),
         "log": _grab_block(raw, "LOG"),
+        "mhw_rule": _grab_block(raw, "MHW_RULE"),  # NEW: optional extra block
         "raw": raw,
     }
     out["mode"] = (out["mode"] or "").strip().lower()
     if out["mode"] not in ("code", "explain"):
-        # 容錯：若 LLM 沒有標，試探性判斷
         out["mode"] = "code" if out["code"] else ("explain" if out["answer"] else "")
     return out
 
@@ -1922,20 +1963,33 @@ def build_one_pass_sysrule(
     code_core       = _sysrule_code_assistant(chunk_hint_line, debug=debug)
     explain_core    = _sysrule_explain(force_zh)
 
+    # Temporarily remove LOG block
+    #    "Always include a final <<<LOG>>> block\n"
+    #    "<<<LOG>>>\n<1-2 lines: why MODE and key constraints considered>\n<<<END>>>\n"
+    #    + "STEP 4 — Assistant for Logging as <<<LOG>>> content with 1–2 lines explaining each STEP's decision.\n\n"
+
     strict_format = (
         "STRICT OUTPUT FORMAT (use these exact tagged blocks):\n"
+        # --- 絕對輸出規則（關鍵！防止 20b 輸出思考文字）---
+        "ABSOLUTE OUTPUT RULES:\n"
+        "- Think silently; NEVER print analysis, steps, or rationale.\n"
+        "- Do NOT write any text outside the tagged blocks below.\n"
+        "- Do NOT use backticks or Markdown code fences anywhere.\n"
+        "- Your FIRST characters must be exactly: '<<<MODE>>>' (no preface, no commentary).\n"
+        "- If MODE=code and you do not include a non-empty <<<CODE>>> block, the output is INVALID.\n"
+        "- Forbidden phrases outside blocks: 'We need to', 'Thus', 'So', 'Plan JSON', 'I will', 'Let us'.\n"
+        "\n"
         "<<<MODE>>>{code|explain}<<<END>>>\n"
         "If MODE=code:\n"
-        "<<<PLAN>>>{ \"endpoint\": \"/api/...\", \"params\": { ... } }<<<END>>>\n"
+        # 明講 PLAN + CODE 都必須出現
+        "- You MUST output BOTH a <<<PLAN>>> JSON block and a <<<CODE>>> block in this order.\n"
+        "<<<PLAN>>>{ \"endpoint\": \"/api/...\", \"params\": { ... }, \"chunk_rule\": \"<monthly|yearly|decade or empty>\", \"plot_rule\": \"<timeseries|map or empty>\"}<<<END>>>\n"
         "<<<CODE>>>\n<single runnable python script>\n<<<END>>>\n"
         "If MODE=explain:\n"
         "<<<ANSWER>>>\n<markdown or text answer>\n<<<END>>>\n"
-        "Always include:\n"
-        "<<<LOG>>>\n<1-3 lines: why MODE and key constraints considered>\n<<<END>>>\n"
     )
-
     notes_line = "RAG NOTES:\n" + f"{rag_notes or '(none)'}"
-    prev_line  = "Previous plan:\n" + (json.dumps(prev_plan, ensure_ascii=False) if prev_plan else "(none)")
+    prev_line  = "Previous plan (Keep the parameters if user not intent to vary them but want to follow up previous question):\n" + (json.dumps(prev_plan, ensure_ascii=False) if prev_plan else "(none)")
     oas_blob   = {
         "paths": oas_info.get("paths", []),
         "params": oas_info.get("params", []),
@@ -1944,18 +1998,25 @@ def build_one_pass_sysrule(
     }
 
     return (
-        "You are the ODB assistant running in ONE pass.\n"
-        + "STEP 1 — " + classifier_core + "\n"
-        + "STEP 2 — API planner (ONLY when MODE=code):\n" + planner_core + "\n"
-        + "STEP 3A — CODE assistant (ONLY when MODE=code):\n" + code_core + "\n"
-        + "STEP 3B — EXPLAIN assistant (ONLY when MODE=explain):\n" + explain_core + "\n"
+        "You are an ODB assistant that does Classifier, Planner, Coder, and Explainer in ONE pass.\n"
+        + "Think step-by-step INTERNALLY, but NEVER print your reasoning.\n"
+        + "Only print the tagged blocks and contents within the tagged blocks defined in STRICT OUTPUT FORMAT.\n"        
+        + "You must decide and output the content of tagged blocks at each STEP:\n"
+        + "STEP 1 (Classsifier for <<<MODE>>> content) — " + classifier_core  + "\n"
+        + "STEP 2 (Planner for <<<PLAN>>> content, ONLY when MODE=code) — " + planner_core + "\n"
+        + "STEP 3A (Coder for <<<CODE>>> content, ONLY when MODE=code) — " + code_core + "\n"
+        + "STEP 3B (Explainer for <<<ANSWER>>> content, ONLY when MODE=explain) — " + explain_core + "\n"
         + strict_format
-        + "---- CONTEXT ----\n"
-        + f"{notes_line}\n\n"
-        + f"Question:\n{question}\n\n"
-        + f"{prev_line}\n\n"
+        + "\n"
+        + "---- CONTEXT (reference for decisions) ----\n"
+        + f"{notes_line}\n"
+        + "\n"
+        + f"Question:\n{question}\n"
+        + "\n"
+        + f"{prev_line}\n"
+        + "\n"
         + "OAS whitelist (for planning ONLY):\n"
-        + f"{json.dumps(oas_blob, ensure_ascii=False)}\n"
+        + f"{json.dumps(oas_blob, ensure_ascii=False)}"
     )
 
 def llm_one_pass_decide_plan_and_code(
@@ -1973,15 +2034,14 @@ def llm_one_pass_decide_plan_and_code(
     回傳欄位：
       - mode: "code" | "explain"
       - plan: dict | None
+      - chunk_rule: str | None
+      - plot_rule: str | None
       - code: str | None
       - explain: str | None
       - raw: 原始 LLM 輸出
-      - log: LLM 自述判斷原因（<<<LOG>>> 區塊）
+      - log: LLM 自述判斷原因
     """
-    # 語言偵測（繁中優先）
     force_zh = bool(re.search(r"繁體|正體|繁體中文", question)) or bool(re.search(r"[\u4e00-\u9fff]", question))
-
-    # 構建 one-pass 的系統規則（統一用共用模組的 sysrules）
     sysrule = build_one_pass_sysrule(
         question=question,
         rag_notes=rag_notes,
@@ -1992,12 +2052,10 @@ def llm_one_pass_decide_plan_and_code(
         debug=debug
     )
 
-    # === User 內容（RAG + 歷史 + 問題）===
     user_parts: List[str] = []
     if rag_notes:
         user_parts.append("[RAG NOTES]\n" + (rag_notes or "(none)"))
 
-    # 濃縮歷史：只在存在工具時使用；避免依賴失敗
     hist_text = ""
     try:
         if history and "_render_history_for_llm" in globals():
@@ -2013,7 +2071,6 @@ def llm_one_pass_decide_plan_and_code(
     if debug:
         print("[DEBUG] use one-pass LLM")
 
-    # 呼叫 LLM
     txt = run_llm(
         llm,
         [{"role":"system","content":sysrule},
@@ -2021,42 +2078,55 @@ def llm_one_pass_decide_plan_and_code(
         timeout=600.0
     ) or ""
 
-    # 解析嚴格區塊
     blocks = parse_strict_blocks(txt)
     mode   = (blocks.get("mode") or "").strip().lower()
     planj  = blocks.get("plan", "") or ""
     code_b = blocks.get("code", "") or ""
     ans_b  = blocks.get("answer", "") or ""
     log_b  = blocks.get("log", "") or ""
+    mhw_b  = blocks.get("mhw_rule", "") or "" 
+    plot_b  = blocks.get("plot_rule", "") or "" 
 
-    # DEBUG：顯示區塊存在與長度、並列印 PLAN 與 LOG 內容
     if debug:
-        keys_present = ", ".join([k for k in ["mode","plan","code","answer","log"] if blocks.get(k)])
+        keys_present = ", ".join([k for k in ["mode","plan","code","answer","log","mhw_rule"] if blocks.get(k)])
         print(f"[DEBUG] parse_strict_blocks → keys: {keys_present} | mode={mode}")
         print(f"[DEBUG] MODE={mode} | plan_len={len(planj)} | code_len={len(code_b)} | answer_len={len(ans_b)} | log_len={len(log_b)}")
         if log_b:
             print(f"[DEBUG] LOG block:\n{log_b}")
         if planj:
             print(f"[DEBUG] PLAN block:\n{planj}")
+        if mhw_b:
+            print(f"[DEBUG] MHW_RULE block:\n{mhw_b}")
+        if plot_b:
+            print(f"[DEBUG] PLOT_RULE block:\n{plot_b}")
 
     out: Dict[str,Any] = {
         "mode": mode or "",
         "plan": None,
+        "chunk_rule": None,
+        "plot_rule": None,
         "code": None,
         "explain": None,
         "raw": txt,
         "log": log_b
     }
 
-    # 分流：code / explain
+    out: Dict[str,Any] = {
+        "mode": mode or "",
+        "plan": None,
+        "chunk_rule": None,   # NEW
+        "code": None,
+        "explain": None,
+        "raw": txt,
+        "log": log_b
+    }
+
     if mode == "code":
-        # 1) 解析計畫 JSON（容錯）
         plan_obj: Optional[Dict[str,Any]] = None
         if planj:
             try:
                 plan_obj = json.loads(planj)
             except Exception:
-                # 退而求其次：抓最外層 JSON 主體
                 m = re.search(r'\{[\s\S]*\}', planj)
                 if m:
                     try:
@@ -2065,13 +2135,23 @@ def llm_one_pass_decide_plan_and_code(
                         plan_obj = None
         out["plan"] = plan_obj
 
-        # 2) 擷取 code（保持純 code；不在此處做續寫）
+        # NEW: 抓取 chunk_rule（PLAN 優先，否則用 MHW_RULE 區塊）
+        plan_chunk = None
+        if isinstance(plan_obj, dict):
+            plan_chunk = plan_obj.get("chunk_rule")
+            if isinstance(plan_chunk, (list, dict)):
+                plan_chunk = json.dumps(plan_chunk, ensure_ascii=False)
+        if not plan_chunk and mhw_b:
+            plan_chunk = mhw_b
+        if isinstance(plan_chunk, str):
+            plan_chunk = plan_chunk.strip()
+        out["chunk_rule"] = plan_chunk or None
+
         code_text = extract_code_from_markdown(code_b).strip()
         out["code"] = code_text
         return out
 
     elif mode == "explain":
-        # 保留 Markdown，僅去掉 one-pass 控制標記與 {explain} 標記
         cleaned = ans_b
         if 'ONE_PASS_MARKER_RE' in globals() and isinstance(ONE_PASS_MARKER_RE, re.Pattern):
             cleaned = ONE_PASS_MARKER_RE.sub(' ', cleaned)
@@ -2080,7 +2160,7 @@ def llm_one_pass_decide_plan_and_code(
         out["explain"] = cleaned.strip()
         return out
 
-    # 若未能決定 mode：保底 → 當作 explain（保留 Markdown）
+    # fallback → explain
     fallback = ans_b or txt
     if 'ONE_PASS_MARKER_RE' in globals() and isinstance(ONE_PASS_MARKER_RE, re.Pattern):
         fallback = ONE_PASS_MARKER_RE.sub(' ', fallback)
@@ -2122,7 +2202,6 @@ def answer_once(
         print(f"[DEBUG] RAG for one-pass: {len(hits_for_one_pass)} candidates after union (base+rerank).")
     rag_notes = collect_rag_notes(hits_for_one_pass, max_chars=1400, debug=debug)
 
-    # 5) 決定管線：預設 One-Pass；若設 MULTI_STEPS=1 才走舊管線
     force_multi = (os.getenv("MULTI_STEPS", "0") == "1")
     init_chunk_line = _mhw_chunk_general_rule()
     if not force_multi:
@@ -2147,23 +2226,24 @@ def answer_once(
             cites = format_citations(hits, question)
             return f"{op['explain']}\n\n=== 參考資料 ===\n{cites}"
 
-        if op.get("mode") == "code" and (op.get("plan") and op.get("code")):
+        if op.get("mode") == "code" and (op.get("plan") and op.get("code") is not None):
             ok, msg = validate_plan(op["plan"], oas_info)
             if debug and not ok:
                 print(f"[DEBUG] one-pass plan invalid: {msg} — falling back to multi-step.")
             else:
-                code = op["code"]
+                code = op["code"] or ""
+                # 若 code 不完整 → 續寫一次，使用 planner 給的 chunk_rule（若有）
                 if not _looks_like_complete_code(code, debug=debug):
                     if debug:
                         print("[DEBUG] one-pass code incomplete → try single continuation")
+                    prefer_chunk = op.get("chunk_rule") or build_chunk_line_from_plan(op["plan"]) or init_chunk_line
                     more = code_continue_via_llm(
-                        # question="請從上段未完成處繼續，補足缺漏行，完成繪圖與收尾，不要重複前段程式碼，但保持縮排正確一致。",
                         question=question,
                         plan=op["plan"],
                         last_code=code, 
                         llm=llm,
                         debug=debug,
-                        chunk_line=init_chunk_line,
+                        chunk_line=prefer_chunk,
                         oas=oas_info
                     )
                     if more:
@@ -2178,7 +2258,6 @@ def answer_once(
                     globals()["LAST_CODE_TEXT"] = code
                     return f"{code}\n\n=== 參考資料 ===\n{cites}"
 
-        # One-Pass 未能產出可用結果 → 退回 Multi-Steps（debug/除錯用）
         if debug:
             print("[DEBUG] path=one-pass | fallback to multi-step")
 
@@ -2222,7 +2301,11 @@ def answer_once(
     if debug and not ok:
         print(f"[DEBUG] Plan invalid@second: {msg}")
 
-    code = code_from_plan_via_llm(question, plan, llm=llm, debug=debug, chunk_line=build_chunk_line_from_plan(plan), oas=oas_info) or ""
+    code = code_from_plan_via_llm(
+        question, plan, llm=llm, debug=debug,
+        chunk_line=(build_chunk_line_from_plan(plan) or init_chunk_line),
+        oas=oas_info
+    ) or ""
     ok2, msg2 = static_guard_check(code, oas_info, expect_csv=False, expect_map=False)
     if not ok2 and debug:
         print(f"[DEBUG] Code violates guard: {msg2}")

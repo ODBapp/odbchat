@@ -26,3 +26,4 @@
     - improve sharing sysrules module for one-pass LLM, need tuned/n3
 #### v0.2.3 Staged-like structured one-pass LLM improvement/n1
     - continue improving sharing sysrules.../n2 
+#### v0.2.4 Determine plot_rules, more robust sysrules for staged-structure one-pass LLM/n3
