@@ -22,7 +22,7 @@ rag_cli.py — ODBchat RAG CLI (rev: 2025-09-07)
 
 from __future__ import annotations
 
-import os, re, json, argparse, warnings, ast
+import os, re, json, argparse, warnings, ast, sys
 from typing import Any, Dict, List, Tuple, Optional
 from datetime import datetime
 from collections import Counter
@@ -47,7 +47,7 @@ COLLECTION     = os.environ.get("QDRANT_COL", "odb_mhw_knowledge_v1")
 EMBED_MODEL    = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
 
 OLLAMA_URL     = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b") #gemma3:12b #"gpt-oss:20b"
+OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:12b") #gemma3:27b #"gpt-oss:20b"
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "720"))
 
 LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8201/completion")
@@ -647,10 +647,127 @@ def harvest_oas_whitelist(hits: List[Dict[str,Any]], debug: bool=False) -> Optio
 # --------------------
 # LLM calls
 # --------------------
+def call_ollama_chat(messages: list[dict], timeout: float | None = None) -> str:
+    """
+    優先走 Ollama /api/chat（Chat Completions 風格），失敗時退回 /api/generate。
+    參數對齊：temperature/top_p/top_k/min_p/repeat_penalty/num_ctx/num_predict/stop
+    這些可用環境變數覆寫（都可選）：
+      LLM_TEMP, LLM_TOP_P, LLM_TOP_K, LLM_MIN_P, LLM_REPEAT_PENALTY, LLM_NUM_CTX, LLM_MAX_TOKENS, LLM_STOP
+    """
+    temp = float(os.environ.get("LLM_TEMP", "0.7"))
+    top_p = float(os.environ.get("LLM_TOP_P", "0.9"))
+    top_k = int(os.environ.get("LLM_TOP_K", "40"))
+    min_p = float(os.environ.get("LLM_MIN_P", "0.05"))
+    rpt_p = float(os.environ.get("LLM_REPEAT_PENALTY", "1.05"))
+    num_ctx = int(os.environ.get("LLM_NUM_CTX", "8192"))
+    num_pred = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
+    try:
+        stops = json.loads(os.environ.get("LLM_STOP", "[]"))
+        if not isinstance(stops, list):
+            stops = []
+    except Exception:
+        stops = []
+
+    chat_url = os.environ.get("OLLAMA_CHAT_URL", "http://localhost:11434/api/chat")
+    gen_url  = OLLAMA_URL  # 你檔案原本已有（/api/generate）
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [{"role": m.get("role","user"), "content": m.get("content","")} for m in messages],
+        "stream": False,
+        "options": {
+            "temperature": temp,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "repeat_penalty": rpt_p,
+            "num_ctx": num_ctx,
+            "num_predict": num_pred,
+            "stop": stops,
+        }
+    }
+    try:
+        resp = requests.post(chat_url, json=payload, timeout=timeout or OLLAMA_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        # 新版 Ollama
+        if isinstance(data, dict) and data.get("message"):
+            return (data["message"].get("content") or "").strip()
+        # 舊版/相容
+        if "response" in data:
+            return (data.get("response") or "").strip()
+    except Exception:
+        # 退回 /api/generate：把 messages 攤平成平面 prompt
+        flat = "\n\n".join(f"{m.get('role','user').upper()}:\n{m.get('content','')}" for m in messages)
+        resp = requests.post(gen_url, json={"model": OLLAMA_MODEL, "prompt": flat, "stream": False},
+                             timeout=timeout or OLLAMA_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        return (data.get("response") or data.get("choices",[{}])[0].get("text","") or "").strip()
+
+    return ""
+
 def call_ollama_raw(prompt: str, timeout: float = OLLAMA_TIMEOUT) -> str:
     resp = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}, timeout=timeout)
     resp.raise_for_status(); data = resp.json()
     return data.get("response","").strip() or data.get("choices",[{}])[0].get("text","")
+
+def call_llamacpp_chat(messages: list[dict], timeout: float | None = None) -> str:
+    """
+    優先走 llama.cpp 的 OpenAI 相容 /v1/chat/completions；失敗時退回 /completion。
+    參數對齊同上；退回 /completion 時會把 messages 攤平成平面 prompt。
+    """
+    temp = float(os.environ.get("LLM_TEMP", "0.7"))
+    top_p = float(os.environ.get("LLM_TOP_P", "0.9"))
+    top_k = int(os.environ.get("LLM_TOP_K", "40"))
+    min_p = float(os.environ.get("LLM_MIN_P", "0.05"))
+    rpt_p = float(os.environ.get("LLM_REPEAT_PENALTY", "1.05"))
+    num_pred = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
+    try:
+        stops = json.loads(os.environ.get("LLM_STOP", "[]"))
+        if not isinstance(stops, list):
+            stops = []
+    except Exception:
+        stops = []
+
+    chat_url = os.environ.get("LLAMA_CHAT_URL", "http://localhost:8201/v1/chat/completions")
+    comp_url = LLAMA_URL  # 你檔案原本已有（/completion）
+
+    payload = {
+        "model": "local",  # llama.cpp 忽略此值，但欄位需要存在
+        "messages": [{"role": m.get("role","user"), "content": m.get("content","")} for m in messages],
+        "temperature": temp,
+        "top_p": top_p,
+        "top_k": top_k,
+        "min_p": min_p,
+        "repeat_penalty": rpt_p,
+        "max_tokens": num_pred,
+        "stop": stops,
+    }
+    try:
+        resp = requests.post(chat_url, json=payload, timeout=timeout or LLAMA_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict) and data.get("choices"):
+            return (data["choices"][0].get("message",{}).get("content","") or "").strip()
+    except Exception:
+        # 退回 legacy /completion
+        flat = "\n\n".join(f"{m.get('role','user').upper()}:\n{m.get('content','')}" for m in messages)
+        resp = requests.post(comp_url, json={
+            "prompt": flat,
+            "n_predict": num_pred,
+            "temperature": temp,
+            "top_p": top_p,
+            "top_k": top_k,
+            "min_p": min_p,
+            "repeat_penalty": rpt_p,
+            "stop": stops,
+        }, timeout=timeout or LLAMA_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        return (data.get("content") or data.get("choices",[{}])[0].get("text","") or "").strip()
+
+    return ""
 
 def call_llamacpp_raw(prompt: str, timeout: float = LLAMA_TIMEOUT) -> str:
     resp = requests.post(LLAMA_URL, json={"prompt": prompt, "n_predict": 512, "temperature": 0.0}, timeout=timeout)
@@ -658,6 +775,24 @@ def call_llamacpp_raw(prompt: str, timeout: float = LLAMA_TIMEOUT) -> str:
     return (data.get("content") or data.get("choices",[{}])[0].get("text"," ")).strip()
 
 def run_llm(llm: str, messages: list[dict], timeout: float = 120.0) -> str:
+    """
+    統一用 Chat Completions 流程：
+    - llm == "ollama" → call_ollama_chat(messages)
+    - 其他（含 "llama"）→ call_llamacpp_chat(messages)
+    """
+    if not messages:
+        return ""
+    # 這裡不再把 messages 攤平成 "ROLE:\ncontent" 平面 prompt
+    try:
+        if llm == "ollama":
+            return call_ollama_chat(messages, timeout=timeout) or ""
+        else:
+            return call_llamacpp_chat(messages, timeout=timeout) or ""
+    except Exception as e:
+        # 保底：回傳空字串，由上層邏輯決定 fallback
+        return ""
+
+def run_llm_raw(llm: str, messages: list[dict], timeout: float = 120.0) -> str:
     """
     Minimal chat wrapper that composes a plain prompt from messages and calls local backends.
     - llm: "ollama" uses call_ollama_raw; anything else falls back to call_llamacpp_raw.
@@ -774,7 +909,8 @@ def _sysrule_planner(oas_info: Dict[str, Any], debug: bool=True) -> str:
         "- If no plotting is implied → plot_rule='none' (or empty).\n\n"
         "Plan Inheritance:\n"
         "- If usr intent to follow up or revise previous question, do NOT remove constraints/params in previous plan. Inherit values, or update them if the new question explicitly asks for altering values.\n"
-        "- For example: if user ask for altering latitude range, then just alter whitelisted latitude-related params, keep other params unchanged."
+        "- For example: if user ask for altering latitude range, then just alter whitelisted latitude-related params, keep other key/values unchanged.\n"
+        "- Always output a full PLAN object that includes **all** the keys (endpoint, params, chunk_rule, plot_rule).\n"
         # "The PLAN is only a control object for the client; it is NOT user-visible prose. Strictly follow the following JSON format and do NOT treat it as the answer to the question.\n"
         'Return JSON only: { "endpoint": "<path>", "params": { "<param>": "<value>" }, "chunk_rule": "<monthly|yearly|decade|>", "plot_rule": "<timeseries|map|none|>" }\n'
     )
@@ -1922,28 +2058,128 @@ def _looks_like_complete_code(code: str, debug: bool=False) -> bool:
         return False
     return True
 
+def grab_block_flexible(raw_text: str, tag: str) -> str:
+    """
+    從 <<<TAG>>> 開始擷取到：
+      1) <<<END>>>，或
+      2) 下一個 <<<SOME_TAG>>>，或
+      3) 字串結尾。
+    用於模型漏掉 <<<END>>> 時的寬鬆解析。
+    """
+    m = re.search(rf'<<<{tag}>>>', raw_text, flags=re.IGNORECASE)
+    if not m:
+        return ""
+    start = m.end()
+    # 先找 END
+    m_end = re.search(r'<<<END>>>', raw_text[start:], flags=re.IGNORECASE)
+    if m_end:
+        return raw_text[start:start + m_end.start()].strip()
+    # 再找下一個 TAG
+    m_next = re.search(r'<<<[A-Z_]+>>>', raw_text[start:], flags=re.IGNORECASE)
+    if m_next:
+        return raw_text[start:start + m_next.start()].strip()
+    # 都沒有就吃到結尾
+    return raw_text[start:].strip()
+
 def _grab_block(text: str, tag: str) -> str:
     pat = re.compile(rf'<<<{tag}>>>\s*([\s\S]*?)\s*<<<END>>>', flags=re.IGNORECASE)
     m = pat.search(text or "")
     return (m.group(1) if m else "").strip()
 
+def extract_first_fenced_code(raw_text: str) -> str:
+    """
+    嘗試從輸出中擷取第一段 code fence。
+    支援 ```lang\n...\n``` 與 ~~~lang\n...\n~~~，也容忍無語言標記。
+    """
+    # 三個反引號（有語言或無語言）
+    m = re.search(r"```[^\n]*\n([\s\S]*?)```", raw_text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    # 容忍同一行包起來的 ```code```
+    m = re.search(r"```([\s\S]*?)```", raw_text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    # 三個波浪線
+    m = re.search(r"~~~[^\n]*\n([\s\S]*?)~~~", raw_text)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    return ""
+
 def parse_strict_blocks(text: str) -> Dict[str, str]:
-    raw = text or ""
+    """
+    嚴格區塊解析 + 寬鬆補救：
+      - 先抓 <<<TAG>>>...<<<END>>>
+      - 缺 END 用 grab_block_flexible()
+      - mode=code 但沒有 code → 從 fenced code 抽
+      - 最後仍無 code → 轉 explain
+      - 另外：PLAN 為空時，嘗試從 raw 恢復（recover_plan_from_text_or_code）
+    """
+    raw = (text or "").replace("\u200b", "").replace("\ufeff", "")
+
     def _grab_block(raw_text: str, tag: str) -> str:
         m = re.search(rf'<<<{tag}>>>\s*([\s\S]*?)\s*<<<END>>>', raw_text, flags=re.IGNORECASE)
         return (m.group(1) if m else "").strip()
+
     out = {
         "mode": _grab_block(raw, "MODE"),
         "plan": _grab_block(raw, "PLAN"),
         "code": _grab_block(raw, "CODE"),
         "answer": _grab_block(raw, "ANSWER"),
         "log": _grab_block(raw, "LOG"),
-        "mhw_rule": _grab_block(raw, "MHW_RULE"),  # NEW: optional extra block
+        "mhw_rule": _grab_block(raw, "MHW_RULE"),
         "raw": raw,
     }
+
+    # 寬鬆補抓
+    if not out["plan"]:
+        soft = grab_block_flexible(raw, "PLAN")
+        if soft:
+            out["plan"] = soft
+            print("[DEBUG] parse_blocks: PLAN recovered via flexible grab", file=sys.stderr)
+    if not out["code"]:
+        soft = grab_block_flexible(raw, "CODE")
+        if soft:
+            out["code"] = soft
+            print("[DEBUG] parse_blocks: CODE recovered via flexible grab", file=sys.stderr)
+    if not out["answer"]:
+        soft = grab_block_flexible(raw, "ANSWER")
+        if soft:
+            out["answer"] = soft
+            print("[DEBUG] parse_blocks: ANSWER recovered via flexible grab", file=sys.stderr)
+
+    # 標準化 mode
     out["mode"] = (out["mode"] or "").strip().lower()
     if out["mode"] not in ("code", "explain"):
         out["mode"] = "code" if out["code"] else ("explain" if out["answer"] else "")
+
+    # mode=code 但無 code → 從 fenced code 補救
+    if out["mode"] == "code" and not out["code"]:
+        fenced = extract_first_fenced_code(raw)
+        if fenced:
+            out["code"] = fenced
+            print("[DEBUG] parse_blocks: CODE recovered from fenced block", file=sys.stderr)
+
+    # PLAN 仍為空 → 嘗試從 raw 恢復（12b 常見）
+    if not out["plan"]:
+        rec = recover_plan_from_text_or_code(raw)
+        if rec:
+            try:
+                out["plan"] = json.dumps(rec, ensure_ascii=False)
+                print("[DEBUG] parse_blocks: PLAN recovered from text/code heuristics", file=sys.stderr)
+            except Exception:
+                pass
+
+    # 仍無 code → 視為 explain
+    if out["mode"] == "code" and not out["code"]:
+        tmp = re.sub(r"```[\s\S]*?```", " ", raw)
+        tmp = re.sub(r"~~~[\s\S]*?~~~", " ", tmp)
+        tmp = re.sub(r"<<<[^>]+>>>", " ", tmp)
+        ans = re.sub(r"\s+", " ", tmp).strip()
+        if ans:
+            out["mode"] = "explain"
+            out["answer"] = out["answer"] or ans
+            print("[DEBUG] parse_blocks: switched to explain (no code found)", file=sys.stderr)
+
     return out
 
 # --------------------
