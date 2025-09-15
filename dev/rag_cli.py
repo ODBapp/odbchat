@@ -47,10 +47,10 @@ COLLECTION     = os.environ.get("QDRANT_COL", "odb_mhw_knowledge_v1")
 EMBED_MODEL    = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
 
 OLLAMA_URL     = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:27b") #gemma3:4b #"gpt-oss:20b"
+OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "gemma3:4b") #gemma3:12b #"gpt-oss:20b"
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "720"))
 
-LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8001/completion")
+LLAMA_URL      = os.environ.get("LLAMA_URL", "http://localhost:8201/completion")
 LLAMA_TIMEOUT  = float(os.environ.get("LLAMA_TIMEOUT", "300"))
 
 ECO_BASE_URL   = "https://eco.odb.ntu.edu.tw"
@@ -721,7 +721,7 @@ def _sysrule_classifier() -> str:
     return (
         "MODE classifier:\n"
         "- Decide one token: 'code' or 'explain'.\n"
-        "- Output 'code' if the user clearly asks for code/script/programmatic steps, plotting, API calls/downloads, or to continue/complete/follow up/revise previous code.\n"
+        "- Output 'code' if the user clearly asks for code/script/programmatic steps, API calls/downloads, or to continue/complete/follow up/revise previous code.\n"
         "- If the question contains negative phrases like 'without code', '不用程式', '不要 code', '不需寫程式', '不用 API', '除了程式以外', choose 'explain'.\n"
         "- Favor 'explain' when they ask to explain/define/list/compare/描述/解釋 without requesting code.\n"
     )
@@ -772,9 +772,10 @@ def _sysrule_planner(oas_info: Dict[str, Any], debug: bool=True) -> str:
         "    • (趨勢/變化/長期/時序/指數/時間/time series) → plot_rule='timeseries'\n"
         "    • (分佈/地圖/空間/網格/水平分佈/map) → plot_rule='map'\n"
         "- If no plotting is implied → plot_rule='none' (or empty).\n\n"
-        "Follow-up guidance:\n"
-        "- If usr intent to follow up or revise previous question, do NOT remove constraints/params in previous plan, inherit values, or update them if the new question explicitly asks for altering values.\n"
-        "The PLAN is only a control object for the client; it is NOT user-visible prose. Do not output any text besides the JSON.\n"
+        "Plan Inheritance:\n"
+        "- If usr intent to follow up or revise previous question, do NOT remove constraints/params in previous plan. Inherit values, or update them if the new question explicitly asks for altering values.\n"
+        "- For example: if user ask for altering latitude range, then just alter whitelisted latitude-related params, keep other params unchanged."
+        # "The PLAN is only a control object for the client; it is NOT user-visible prose. Strictly follow the following JSON format and do NOT treat it as the answer to the question.\n"
         'Return JSON only: { "endpoint": "<path>", "params": { "<param>": "<value>" }, "chunk_rule": "<monthly|yearly|decade|>", "plot_rule": "<timeseries|map|none|>" }\n'
     )
 
@@ -841,8 +842,8 @@ def _sysrule_explain(force_zh: bool) -> str:
         "- Avoid one-pass control markers like <<<...>>> and tokens like {explain}.\n"
         "- Prefer actionable, non-code options when relevant (e.g., web pages, dashboards, documented tools), and summarize what to do and where to find it.\n"
         "- Keep it short but complete: 3–8 short paragraphs or a tight bulleted list.\n"
-        "- If the notes include a CLI guide, describe what it enables at a high level (no commands).\n"
-        "- If asked to explain/annotate previous code, explain each step clearly.\n"
+        # "- If the notes include a CLI guide, describe what it enables at a high level (no commands).\n"
+        "- If asked to explain/annotate previous code, explain critical steps clearly.\n"
     )
 
 # ---------- Continue LLM：只補尾、不重寫；遵循 OAS / 計劃 / chunk 規則 ----------
@@ -1969,23 +1970,22 @@ def build_one_pass_sysrule(
     #    + "STEP 4 — Assistant for Logging as <<<LOG>>> content with 1–2 lines explaining each STEP's decision.\n\n"
 
     strict_format = (
-        "STRICT OUTPUT FORMAT (use these exact tagged blocks):\n"
         # --- 絕對輸出規則（關鍵！防止 20b 輸出思考文字）---
         "ABSOLUTE OUTPUT RULES:\n"
-        "- Think silently; NEVER print analysis, steps, or rationale.\n"
-        "- Do NOT write any text outside the tagged blocks below.\n"
-        "- Do NOT use backticks or Markdown code fences anywhere.\n"
-        "- Your FIRST characters must be exactly: '<<<MODE>>>' (no preface, no commentary).\n"
-        "- If MODE=code and you do not include a non-empty <<<CODE>>> block, the output is INVALID.\n"
-        "- Forbidden phrases outside blocks: 'We need to', 'Thus', 'So', 'Plan JSON', 'I will', 'Let us'.\n"
-        "\n"
-        "<<<MODE>>>{code|explain}<<<END>>>\n"
-        "If MODE=code:\n"
-        # 明講 PLAN + CODE 都必須出現
+        # "- Think silently; NEVER print analysis, steps, or rationale.\n"
+        # "- Do NOT write any text outside the tagged blocks below. It means: Your FIRST characters must be exactly: '<<<MODE>>>' (no preface, no commentary).\n"
+        # "- Do NOT use backticks or Markdown code fences anywhere.\n"
+        "If MODE=code (for STEP 2A and STEP 3):\n"
         "- You MUST output BOTH a <<<PLAN>>> JSON block and a <<<CODE>>> block in this order.\n"
-        "<<<PLAN>>>{ \"endpoint\": \"/api/...\", \"params\": { ... }, \"chunk_rule\": \"<monthly|yearly|decade or empty>\", \"plot_rule\": \"<timeseries|map or empty>\"}<<<END>>>\n"
+        "- If MODE=code and you do not include a non-empty <<<CODE>>> block, the output is INVALID.\n"
+        "ELSE If MODE=explain (for STEP 2B):\n" 
+        " - do NOT put the PLAN JSON in the <<<ANSWER>>> block. Put the answer to the user question in <<<ANSWER>>> block.\n"
+        # "- Forbidden phrases outside blocks: 'We need to', 'Thus', 'So', 'Plan JSON', 'I will', 'Let us'.\n"
+        "\n"
+        "STRICT OUTPUT FORMAT (use these exact tagged blocks):\n"
+        "<<<MODE>>>{code|explain}<<<END>>>\n"
+        "<<<PLAN>>>{ \"endpoint\": \"/<path>\", \"params\": {\"<param>\": \"<value>\"}, \"chunk_rule\": \"<monthly|yearly|decade or empty>\", \"plot_rule\": \"<timeseries|map or empty>\"}<<<END>>>\n"
         "<<<CODE>>>\n<single runnable python script>\n<<<END>>>\n"
-        "If MODE=explain:\n"
         "<<<ANSWER>>>\n<markdown or text answer>\n<<<END>>>\n"
     )
     notes_line = "RAG NOTES:\n" + f"{rag_notes or '(none)'}"
@@ -2001,11 +2001,12 @@ def build_one_pass_sysrule(
         "You are an ODB assistant that does Classifier, Planner, Coder, and Explainer in ONE pass.\n"
         + "Think step-by-step INTERNALLY, but NEVER print your reasoning.\n"
         + "Only print the tagged blocks and contents within the tagged blocks defined in STRICT OUTPUT FORMAT.\n"        
-        + "You must decide and output the content of tagged blocks at each STEP:\n"
+        + "You must decide and output the content of tagged blocks conditionally for each STEP:\n"
         + "STEP 1 (Classsifier for <<<MODE>>> content) — " + classifier_core  + "\n"
-        + "STEP 2 (Planner for <<<PLAN>>> content, ONLY when MODE=code) — " + planner_core + "\n"
-        + "STEP 3A (Coder for <<<CODE>>> content, ONLY when MODE=code) — " + code_core + "\n"
-        + "STEP 3B (Explainer for <<<ANSWER>>> content, ONLY when MODE=explain) — " + explain_core + "\n"
+        + "(The following STEP 2A and STEP 2B are exclusive. The STEP 3 is following STEP 2A)\n"
+        + "IF MODE=code THEN STEP 2A (Planner for <<<PLAN>>> content, ONLY when MODE=code) — " + planner_core + "\n"
+        + "- THEN STEP 3 (Coder for <<<CODE>>> content, ONLY when MODE=code) — " + code_core + "\n"
+        + "ELSE IF MODE=explain THEN STEP 2B (Explainer for <<<ANSWER>>> content, ONLY when MODE=explain) — " + explain_core + "\n"
         + strict_format
         + "\n"
         + "---- CONTEXT (reference for decisions) ----\n"
