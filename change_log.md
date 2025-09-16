@@ -29,3 +29,8 @@
 #### v0.2.4 Determine plot_rules, more robust sysrules for staged-structure one-pass LLM/n3
     - continue improving sharing sysrules before ingest woa23.../n3 
     - a more loose extract-plan-and-code block parser and chat-message completion for llama-cpp 
+#### v0.3.0 MCP/CLI refactor to centralized one-pass pipeline
+    - add generalised ingest/ingest.py with multi-doc YAML + dry-run support
+    - extract server/rag/onepass_core.py and expose rag.onepass_answer MCP tool
+    - move mhw MCP helpers under server/api, wire CLI to rag.onepass_answer
+    - add schemas, prompt templates, and new pytest coverage for guardrails and CLI UX

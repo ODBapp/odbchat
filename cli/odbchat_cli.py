@@ -24,7 +24,7 @@ then falls back to MCP tool if streaming fails).
 import asyncio
 import json
 import sys
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import os
 try:  # platform-dependent
     import tty  # type: ignore
@@ -187,61 +187,57 @@ class ODBChatClient:
     # ----------------------
     async def chat(self, query: str, model: Optional[str] = None, context: Optional[str] = None):
         use_model = model or self.current_model or DEFAULT_MODEL
-        # Try local streaming first
-        if OllamaAsyncClient is not None:
+        if self.client:
             try:
-                system_prompt = (
-                    "You are an expert assistant for ODB (Ocean Data Bank) and related topics including:\n"
-                    "- ODB database systems and architecture\n"
-                    "- API development and integration\n"
-                    "- Knowledge base management\n"
-                    "- Science communication\n"
-                    "- Data management best practices\n\n"
-                    "Provide accurate, helpful responses based on your knowledge of these domains."
+                result = await self.client.call_tool(
+                    "rag.onepass_answer",
+                    {
+                        "query": query,
+                        "top_k": 6,
+                        "temperature": self.temperature,
+                    },
                 )
-                messages = [{"role": "system", "content": system_prompt}]
-                if context:
-                    messages.append({"role": "system", "content": f"Additional context: {context}"})
-                messages.append({"role": "user", "content": query})
+                data = self._extract_json(result)
+                return self._render_onepass_result(data)
+            except Exception as exc:
+                print(f"\n⚠️  MCP tool fallback triggered ({exc}). Trying local streaming…")
 
-                client = OllamaAsyncClient(host=OLLAMA_URL)
-                full_response = ""
-                async for chunk in await client.chat(
-                    model=use_model,
-                    messages=messages,
-                    options={"temperature": self.temperature},
-                    stream=True,
-                ):
-                    content = chunk.get('message', {}).get('content')
-                    if content:
-                        print(content, end="", flush=True)
-                        full_response += content
-                print()  # newline after streaming
-                return full_response
-            except Exception as e:  # pragma: no cover
-                print(f"\n❌ Streaming error: {e}. Falling back to MCP tool.")
-                # fall through to MCP tool
-
-        # Fallback: call MCP tool (non-streaming)
-        if not self.client:
-            print("❌ Not connected. Use /server connect <url> first.")
+        if OllamaAsyncClient is None:
+            print("❌ Ollama streaming client not available.")
             return ""
+
         try:
-            result = await self.client.call_tool(
-                "chat_with_odb",
-                {
-                    "query": query,
-                    "model": use_model,
-                    "context": context,
-                    "temperature": self.temperature,
-                },
+            system_prompt = (
+                "You are an expert assistant for ODB (Ocean Data Bank) and related topics including:\n"
+                "- ODB database systems and architecture\n"
+                "- API development and integration\n"
+                "- Knowledge base management\n"
+                "- Science communication\n"
+                "- Data management best practices\n\n"
+                "Provide accurate, helpful responses based on your knowledge of these domains."
             )
-            text = self._extract_text(result)
-            print(text)
-            return text
-        except Exception as e:
-            print(f"❌ Error in chat: {e}")
-            return f"Error: {str(e)}"
+            messages = [{"role": "system", "content": system_prompt}]
+            if context:
+                messages.append({"role": "system", "content": f"Additional context: {context}"})
+            messages.append({"role": "user", "content": query})
+
+            client = OllamaAsyncClient(host=OLLAMA_URL)
+            full_response = ""
+            async for chunk in await client.chat(
+                model=use_model,
+                messages=messages,
+                options={"temperature": self.temperature},
+                stream=True,
+            ):
+                content = chunk.get('message', {}).get('content')
+                if content:
+                    print(content, end="", flush=True)
+                    full_response += content
+            print()
+            return full_response
+        except Exception as e:  # pragma: no cover
+            print(f"\n❌ Streaming error: {e}.")
+            return ""
 
     # ----------------------
     # Interactive shell
@@ -708,6 +704,51 @@ class ODBChatClient:
         if isinstance(result, str):
             return result
         return json.dumps(result, ensure_ascii=False)
+
+    def _extract_json(self, result: Any) -> Dict[str, Any]:
+        if isinstance(result, dict):
+            return result
+        text = self._extract_text(result)
+        if isinstance(text, str):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"mode": "explain", "text": text, "citations": []}
+        return {"mode": "explain", "text": str(text), "citations": []}
+
+    def _render_onepass_result(self, data: Dict[str, Any]) -> str:
+        mode = data.get("mode") or "explain"
+        output_parts: List[str] = []
+
+        if mode == "code":
+            plan = data.get("plan")
+            if isinstance(plan, dict):
+                print("\n🛠️ Plan:\n" + json.dumps(plan, ensure_ascii=False, indent=2))
+                output_parts.append(json.dumps(plan, ensure_ascii=False))
+            code = data.get("code") or ""
+            if code:
+                if not code.lstrip().startswith("```"):
+                    code = f"```python\n{code}\n```"
+                print("\n" + code)
+                output_parts.append(code)
+        else:
+            text = data.get("text") or data.get("code") or ""
+            if text:
+                print("\n" + text)
+                output_parts.append(text)
+
+        citations = data.get("citations") or []
+        if citations:
+            print("\n📚 Citations:")
+            for cite in citations:
+                title = cite.get("title") if isinstance(cite, dict) else str(cite)
+                source = cite.get("source") if isinstance(cite, dict) else ""
+                chunk = cite.get("chunk_id") if isinstance(cite, dict) else None
+                if chunk is not None:
+                    print(f"- {title} — {source} (chunk {chunk})")
+                else:
+                    print(f"- {title} — {source}")
+        return "\n".join(output_parts)
 
     def _help_text(self) -> str:
         return (

@@ -9,7 +9,7 @@ canonical_url: "https://github.com/cywhale/marineheatwave/blob/main/API/dev/sim_
 license: "MIT"
 retrieved_at: "2025-08-26"
 doc_id: "799ebc3fe983aa3ef30b81ded189b749373d3ef7"
-tags: [程式, MHW, API, timeseries, Python, map, "code example", "extreme MHWs", "時間序列"", "地圖"]
+tags: [程式, MHW, API, timeseries, Python, map, "code example", "extreme MHWs", "時間序列", "地圖"]
 related_to:
   - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "2ccedb1ef0c1ade74224399ad9767a2e71f5e51"]
   - collection: "mhw"

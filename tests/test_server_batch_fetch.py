@@ -13,9 +13,9 @@ def fake_fetch_impl(**r):
     return {"bbox":[r["lon0"],r["lat0"],r["lon1"],r["lat1"]], "period":[r["start"],r["end"]], "data": rows}
 
 def test_batch_merge_contract(monkeypatch):
-    # monkeypatch your api.mhw_mcp._mhw_fetch_impl
+    # monkeypatch the server api helper
     import importlib
-    m = importlib.import_module("api.mhw_mcp")
+    m = importlib.import_module("server.api.mhw_mcp")
     monkeypatch.setattr(m, "_mhw_fetch_impl", fake_fetch_impl, raising=False)
 
     # call the batch function

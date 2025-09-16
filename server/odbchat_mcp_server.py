@@ -23,8 +23,11 @@ ollama_client = OllamaAsyncClient(host=OLLAMA_URL)
 mcp = FastMCP("odb-chat-server")
 
 # mcp function plugins
-from api.mhw_mcp import register_mhw_tools
+from server.api.mhw_mcp import register_mhw_tools
+from server.tools.rag_onepass_tool import register_rag_onepass_tool
+
 register_mhw_tools(mcp)
+register_rag_onepass_tool(mcp)
 
 # Suggested model candidates (not guaranteed installed)
 SUGGESTED_MODELS = [

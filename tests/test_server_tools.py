@@ -22,7 +22,7 @@ class DummyAsyncClient:
 
 def import_server_with_dummies(models_payload=None, chat_raises: Exception | None = None):
     """
-    Import 'odbchat_mcp_server' with dummy 'ollama' and a no-op 'api.mhw_mcp'.
+    Import 'odbchat_mcp_server' with dummy 'ollama'.
     You can pass:
       - models_payload: dict returned by DummyAsyncClient.list()
       - chat_raises: Exception to raise from DummyAsyncClient.chat()
@@ -42,15 +42,6 @@ def import_server_with_dummies(models_payload=None, chat_raises: Exception | Non
 
     # Inject a minimal 'ollama' shim
     sys.modules["ollama"] = types.SimpleNamespace(AsyncClient=_Client)
-
-    # Inject a minimal 'api.mhw_mcp' with a no-op registrar
-    mock_api_pkg = types.ModuleType("api")
-    mock_mhw = types.ModuleType("api.mhw_mcp")
-    def _noop_register(mcp):
-        return None
-    mock_mhw.register_mhw_tools = _noop_register
-    sys.modules["api"] = mock_api_pkg
-    sys.modules["api.mhw_mcp"] = mock_mhw
 
     # Import the target module
     server = importlib.import_module("odbchat_mcp_server")

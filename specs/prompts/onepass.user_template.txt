@@ -1,0 +1,20 @@
+QUESTION:
+{query}
+
+TOP_K: {top_k}
+
+RAG NOTES:
+{notes}
+
+OAS WHITELIST:
+{whitelist}
+
+Respond using the STRICT OUTPUT FORMAT:
+<<<MODE>>>{{code|explain}}<<<END>>>
+<<<PLAN>>>{{"endpoint": "/api/...", "params": {{"key": "value"}}}}<<<END>>>
+<<<CODE>>>
+<python script when MODE=code>
+<<<END>>>
+<<<ANSWER>>>
+<markdown answer when MODE=explain>
+<<<END>>>
