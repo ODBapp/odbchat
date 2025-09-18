@@ -34,3 +34,7 @@
     - extract server/rag/onepass_core.py and expose rag.onepass_answer MCP tool
     - move mhw MCP helpers under server/api, wire CLI to rag.onepass_answer
     - add schemas, prompt templates, and new pytest coverage for guardrails and CLI UX
+#### v0.3.1 Debug plumbing for one-pass pipeline and CLI integration
+    - rag.onepass MCP schema/tool accept debug flag and emit timing + whitelist diagnostics
+    - run_onepass attaches detailed debug payload on demand and handles empty LLM replies gracefully
+    - CLI adds --debug, prints server plan/code/debug info, and syncs provider:model via config tools

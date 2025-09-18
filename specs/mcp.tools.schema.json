@@ -7,10 +7,11 @@
       "type": "object",
       "required": ["query"],
       "properties": {
-        "query": {"type": "string", "minLength": 3},
-        "top_k": {"type": "integer", "minimum": 1, "maximum": 15, "default": 6},
-        "temperature": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.2},
-        "collection": {"type": "array", "items": {"type": "string"}}
+        "query": { "type": "string", "minLength": 3 },
+        "top_k": { "type": "integer", "minimum": 1, "maximum": 15, "default": 6 },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.2 },
+        "collection": { "type": "array", "items": { "type": "string" } },
+        "debug": { "type": ["boolean", "null"] }
       },
       "additionalProperties": false
     },
@@ -18,54 +19,53 @@
       "type": "object",
       "required": ["mode", "citations"],
       "properties": {
-        "mode": {"enum": ["explain", "code"]},
-        "text": {"type": "string"},
-        "code": {"type": "string"},
-        "plan": {"type": "object"},
+        "mode": { "enum": ["explain", "code"] },
+        "text": { "type": "string" },
+        "code": { "type": "string" },
+        "plan": { "type": "object" },
         "citations": {
           "type": "array",
           "items": {
             "type": "object",
             "required": ["title", "source", "chunk_id"],
             "properties": {
-              "title": {"type": "string"},
-              "source": {"type": "string"},
-              "chunk_id": {"type": "integer"}
+              "title": { "type": "string" },
+              "source": { "type": "string" },
+              "chunk_id": { "type": "integer" }
             }
           }
-        }
-      },
-      "additionalProperties": false
-    },
-    "rag.search_docs.input": {
-      "type": "object",
-      "required": ["query"],
-      "properties": {
-        "query": {"type": "string", "minLength": 3},
-        "k": {"type": "integer", "minimum": 1, "maximum": 30, "default": 6},
-        "collection": {"type": "array", "items": {"type": "string"}}
-      },
-      "additionalProperties": false
-    },
-    "rag.search_docs.output": {
-      "type": "object",
-      "required": ["hits"],
-      "properties": {
-        "hits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["id", "score", "title", "doc_type", "chunk_id", "source_file"],
-            "properties": {
-              "id": {"type": "string"},
-              "score": {"type": "number"},
-              "title": {"type": "string"},
-              "doc_type": {"type": "string"},
-              "chunk_id": {"type": "integer"},
-              "source_file": {"type": "string"},
-              "snippet": {"type": "string"}
+        },
+        "debug": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string" },
+            "plan": { "type": "object" },
+            "code_len": { "type": "integer" },
+            "whitelist": {
+              "type": "object",
+              "properties": {
+                "paths_count": { "type": "integer" },
+                "params_count": { "type": "integer" },
+                "append_allowed": { "type": "array", "items": { "type": "string" } },
+                "sample_paths": { "type": "array", "items": { "type": "string" } },
+                "sample_params": { "type": "array", "items": { "type": "string" } }
+              },
+              "additionalProperties": true
+            },
+            "continued": { "type": "boolean" },
+            "durations_ms": {
+              "type": "object",
+              "properties": {
+                "search": { "type": "integer" },
+                "whitelist": { "type": "integer" },
+                "llm": { "type": "integer" },
+                "validate_guard": { "type": "integer" },
+                "total": { "type": "integer" }
+              },
+              "additionalProperties": true
             }
-          }
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": false

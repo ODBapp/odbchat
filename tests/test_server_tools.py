@@ -1,4 +1,5 @@
 # tests/test_server_tools.py
+import os
 import sys
 import types
 import importlib
@@ -29,6 +30,8 @@ def import_server_with_dummies(models_payload=None, chat_raises: Exception | Non
     """
     # Clean module caches so we re-import fresh
     sys.modules.pop("odbchat_mcp_server", None)
+    sys.modules.pop("server.odbchat_mcp_server", None)
+    sys.modules.pop("server.llm_adapter", None)
 
     # Prepare a dummy AsyncClient that returns the desired stubs
     class _Client(DummyAsyncClient):
@@ -44,7 +47,8 @@ def import_server_with_dummies(models_payload=None, chat_raises: Exception | Non
     sys.modules["ollama"] = types.SimpleNamespace(AsyncClient=_Client)
 
     # Import the target module
-    server = importlib.import_module("odbchat_mcp_server")
+    os.environ["ODBCHAT_SKIP_WARMUP"] = "1"
+    server = importlib.import_module("server.odbchat_mcp_server")
     return server
 
 

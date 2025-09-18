@@ -5,6 +5,7 @@ This creates a proper MCP server that can be used with mcp-use or other MCP clie
 """
 import asyncio
 import json
+import os
 import sys
 import logging
 from typing import Any, Dict, List, Optional
@@ -25,9 +26,28 @@ mcp = FastMCP("odb-chat-server")
 # mcp function plugins
 from server.api.mhw_mcp import register_mhw_tools
 from server.tools.rag_onepass_tool import register_rag_onepass_tool
+from server.rag.onepass_core import get_embedder, embedding_dim, get_qdrant, harvest_oas_whitelist, search_qdrant
+from server.tools.config_tool import register_rag_config_tool
 
 register_mhw_tools(mcp)
 register_rag_onepass_tool(mcp)
+register_rag_config_tool(mcp)
+
+def _warmup():
+    try:
+        get_embedder(); embedding_dim(); get_qdrant()
+        # Prime OAS cache (empty hits → full scan for active collections)
+        try:
+            harvest_oas_whitelist([])
+        except Exception:
+            pass
+        logging.info("Warmup complete.")
+    except Exception as e:
+        logging.warning(f"Warmup error: {e}")
+
+# call at import-time (before mcp.run)
+if os.getenv("ODBCHAT_SKIP_WARMUP", "0") not in {"1", "true", "TRUE", "True"}:
+    _warmup()
 
 # Suggested model candidates (not guaranteed installed)
 SUGGESTED_MODELS = [

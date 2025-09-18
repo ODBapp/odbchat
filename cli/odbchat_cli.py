@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover
     termios = None  # type: ignore
 import argparse
 import select
+import codecs
 from fastmcp import Client
 
 try:
@@ -41,7 +42,7 @@ try:
 except Exception:  # pragma: no cover
     OllamaAsyncClient = None
 
-DEFAULT_SERVER_URL = "http://localhost:8045/mcp"
+DEFAULT_SERVER_URL = "http://localhost:8045/mcp/"
 DEFAULT_MODEL = "gemma3:4b"
 DEFAULT_TEMPERATURE = 0.7
 OLLAMA_URL = "http://127.0.0.1:11434"
@@ -51,11 +52,14 @@ class ODBChatClient:
         self.server_url = server_url
         self.current_model = default_model
         self.temperature = DEFAULT_TEMPERATURE
+        self.debug = False
         self.client: Optional[Client] = None
         # Session-only history for slash-commands (e.g., "/mhw ...")
         self._cmd_history: list[str] = []
         self._commands = {}  # name -> async handler
         self._help = {}      # name -> help string
+        self.server_provider = "unknown"
+        self.server_model = default_model
 
     # ----------------------
     # Connection management
@@ -67,6 +71,9 @@ class ODBChatClient:
             self.client = Client(self.server_url)
             await self.client.__aenter__()
             print(f"✅ Connected to ODB MCP server at {self.server_url}")
+            # fetch server-side model info right after connect
+            info = await self._fetch_server_model_info()
+            print(f"You ({info.get('provider','unknown')}:{info.get('model', self.current_model)} @ {self.temperature})")
             return True
         except Exception as e:  # pragma: no cover
             print(f"❌ Failed to connect to server: {e}")
@@ -183,20 +190,80 @@ class ODBChatClient:
             print(f"❌ Tool error: {e}")
 
     # ----------------------
+    # Server model helpers (via MCP tools)
+    # ----------------------
+    async def _tool_json(self, tool_name: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """Call an MCP tool and parse JSON from either .text or content[0].text."""
+        if not self.client:
+            return {}
+        payload = payload or {}
+        res = await self.client.call_tool(tool_name, payload)
+        # 1) direct text
+        if getattr(res, "text", None):
+            try:
+                return json.loads(res.text)
+            except Exception:
+                pass
+        # 2) content[0].text
+        content = getattr(res, "content", None)
+        if isinstance(content, list) and content and getattr(content[0], "text", None):
+            try:
+                return json.loads(content[0].text)
+            except Exception:
+                pass
+        # 3) already dict
+        if isinstance(res, dict):
+            return res
+        return {}
+
+    async def _fetch_server_model_info(self) -> Dict[str, Any]:
+        """Fetch provider/model/available from server (config.get_model)."""
+        try:
+            info = await self._tool_json("config.get_model", {})
+            provider = info.get("provider") or "unknown"
+            model    = info.get("model") or self.current_model
+            self.server_provider = provider
+            self.server_model    = model
+            return {"provider": provider, "model": model, "available": info.get("available") or []}
+        except Exception:
+            # fall back to local
+            self.server_provider = getattr(self, "server_provider", "unknown")
+            self.server_model    = getattr(self, "server_model", self.current_model)
+            return {"provider": self.server_provider, "model": self.server_model, "available": []}
+
+    async def _set_server_model(self, model_name: str) -> Dict[str, Any]:
+        """Set server-side model (config.set_model)."""
+        try:
+            info = await self._tool_json("config.set_model", {"model": model_name})
+            provider = info.get("provider") or getattr(self, "server_provider", "unknown")
+            model    = info.get("model") or model_name
+            self.server_provider = provider
+            self.server_model    = model
+            return {"provider": provider, "model": model, "available": info.get("available") or []}
+        except Exception:
+            return {}
+
+    def _model_prompt_label(self) -> str:
+        """Return 'provider:model' for REPL prompt."""
+        prov = getattr(self, "server_provider", None) or "unknown"
+        mod  = getattr(self, "server_model", None) or self.current_model
+        return f"{prov}:{mod}"
+
+    # ----------------------
     # Chat (stream via Ollama → fallback to MCP tool)
     # ----------------------
     async def chat(self, query: str, model: Optional[str] = None, context: Optional[str] = None):
         use_model = model or self.current_model or DEFAULT_MODEL
         if self.client:
             try:
-                result = await self.client.call_tool(
-                    "rag.onepass_answer",
-                    {
-                        "query": query,
-                        "top_k": 6,
-                        "temperature": self.temperature,
-                    },
-                )
+                payload = {
+                    "query": query,
+                    "top_k": 6,
+                    "temperature": self.temperature,
+                }
+                if self.debug:
+                    payload["debug"] = True
+                result = await self.client.call_tool("rag.onepass_answer", payload)
                 data = self._extract_json(result)
                 return self._render_onepass_result(data)
             except Exception as exc:
@@ -244,14 +311,21 @@ class ODBChatClient:
     # ----------------------
     async def interactive_chat(self):
         print(f"\n🗣️  Starting ODBChat CLI")
+        # show server-side model at REPL entrance
+        try:
+            info = await self._fetch_server_model_info()
+            print(f"You ({info.get('provider','unknown')}:{info.get('model', self.current_model)} @ {self.temperature})")
+        except Exception:
+            pass
         print("Type /help for commands. Anything else is sent as a prompt.\n")
 
         context = None  # basic rolling context
 
         while True:
             try:
+                prompt_label = self._model_prompt_label()
                 user_input = self._readline_with_cmd_history(
-                    f"\n🧑 You ({self.current_model} @ {self.temperature}): "
+                    f"\n🧑 You ({prompt_label} @ {self.temperature}): "
                 ).strip()
                 if not user_input:
                     continue
@@ -613,7 +687,19 @@ class ODBChatClient:
                 kv = self._parse_kv(args[1:])
                 await self.call_tool(name, kv)
         elif cmd == "/models":
-            await self.list_models()
+            info = await self._fetch_server_model_info()
+            provider = info.get("provider", "unknown")
+            current  = info.get("model", self.current_model)
+            models   = info.get("available") or []
+            print(f"\n🤖 Provider: {provider}")
+            print(f"   Current : {current}")
+            if models:
+                print("   Available models:")
+                for m in models:
+                    mark = " (current)" if str(m) == str(current) else ""
+                    print(f"     - {m}{mark}")
+            else:
+                print("   (No list available from server)")
         elif cmd == "/info":
             if not args:
                 print("Usage: /info <model>")
@@ -621,10 +707,18 @@ class ODBChatClient:
                 await self.show_model_info(args[0])
         elif cmd == "/model":
             if not args:
-                print(f"Current model: {self.current_model}")
+                info = await self._fetch_server_model_info()
+                print(f"Current model: {info.get('provider','unknown')}:{info.get('model', self.current_model)}")
             else:
-                self.current_model = args[0]
-                print(f"🔄 Switched to model: {self.current_model}")
+                target = args[0]
+                resp = await self._set_server_model(target)
+                if not resp:
+                    print("❌ Failed to set model on server.")
+                else:
+                    prov = resp.get("provider", "unknown")
+                    mod  = resp.get("model", target)
+                    self.current_model = mod  # keep local in sync for one-liner prints
+                    print(f"🔄 Now using {prov}:{mod}")
         elif cmd == "/temp":
             if not args:
                 print(f"Current temperature: {self.temperature}")
@@ -716,8 +810,27 @@ class ODBChatClient:
                 return {"mode": "explain", "text": text, "citations": []}
         return {"mode": "explain", "text": str(text), "citations": []}
 
+    @staticmethod
+    def _looks_escaped(s: str) -> bool:
+        return isinstance(s, str) and s.count("\\n") >= 2 and s.count("\n") <= 1
+
+    @staticmethod
+    def _normalize_code(code: str) -> str:
+        if not isinstance(code, str):
+            code = str(code)
+        if ODBChatClient._looks_escaped(code):
+            try:
+                code = json.loads(f'"{code}"')
+            except Exception:
+                try:
+                    code = codecs.decode(code, "unicode_escape")
+                except Exception:
+                    pass
+        code = code.rstrip()
+        return code if code.lstrip().startswith("```") else f"```python\n{code}\n```"
+
     def _render_onepass_result(self, data: Dict[str, Any]) -> str:
-        mode = data.get("mode") or "explain"
+        mode = (data.get("mode") or "explain").lower()
         output_parts: List[str] = []
 
         if mode == "code":
@@ -727,16 +840,34 @@ class ODBChatClient:
                 output_parts.append(json.dumps(plan, ensure_ascii=False))
             code = data.get("code") or ""
             if code:
-                if not code.lstrip().startswith("```"):
-                    code = f"```python\n{code}\n```"
-                print("\n" + code)
-                output_parts.append(code)
+                code_out = self._normalize_code(code)
+                print("\n" + code_out)
+                output_parts.append(code_out)
         else:
             text = data.get("text") or data.get("code") or ""
             if text:
                 print("\n" + text)
                 output_parts.append(text)
 
+        # Optional debug block from server
+        debug = data.get("debug")
+        if isinstance(debug, dict):
+            print("\n🧪 Debug:")
+            mode_dbg = debug.get("mode")
+            code_len = debug.get("code_len")
+            cont = debug.get("continued")
+            dur = debug.get("durations_ms") or {}
+            wl = debug.get("whitelist") or {}
+            print(f"  mode={mode_dbg} code_len={code_len} continued={cont}")
+            guard_ms = dur.get('validate_guard') if 'validate_guard' in dur else dur.get('validate+guard')
+            print(f"  durations(ms): search={dur.get('search')} whitelist={dur.get('whitelist')} llm={dur.get('llm')} guard={guard_ms} total={dur.get('total')}")
+            print(f"  whitelist: paths={wl.get('paths_count')}, params={wl.get('params_count')}, append_allowed={wl.get('append_allowed')}")
+            sp, spp = wl.get('sample_paths') or [], wl.get('sample_params') or []
+            if sp:  print("  sample paths: " + ", ".join(sp))
+            if spp: print("  sample params: " + ", ".join(spp))
+            output_parts.append(json.dumps(debug, ensure_ascii=False))
+
+        # Citations as before...
         citations = data.get("citations") or []
         if citations:
             print("\n📚 Citations:")
@@ -748,6 +879,7 @@ class ODBChatClient:
                     print(f"- {title} — {source} (chunk {chunk})")
                 else:
                     print(f"- {title} — {source}")
+
         return "\n".join(output_parts)
 
     def _help_text(self) -> str:
@@ -780,11 +912,16 @@ async def main():
     parser.add_argument("--list-tools", action="store_true", help="List available tools and exit")
     parser.add_argument("--list-models", action="store_true", help="List available models and exit")
     parser.add_argument("--status", action="store_true", help="Check server status and exit")
+    parser.add_argument("--debug", action="store_true", help="Request one-pass debug traces from the server")
 
     args = parser.parse_args()
 
+    if args.debug:
+        os.environ["ONEPASS_DEBUG"] = os.environ.get("ONEPASS_DEBUG", "1")
+
     cli = ODBChatClient(args.server, default_model=args.model)
     cli.temperature = args.temperature
+    cli.debug = args.debug
 
     # Always connect on startup so non-chat commands work
     connected = await cli.connect()
