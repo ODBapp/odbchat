@@ -152,7 +152,10 @@ def register_rag_onepass_tool(mcp: FastMCP) -> None:
             dbg = dict(res_debug)
             dbg.setdefault("mode", payload_out["mode"])
             dbg.setdefault("code_len", len(res_code or ""))
-            dbg.setdefault("plan", plan_obj or {})
+            if plan_obj:
+                dbg["plan"] = plan_obj
+            elif dbg.get("plan") is None:
+                dbg.pop("plan", None)
             wl = dbg.get("whitelist") or {}
             dbg["whitelist"] = {
                 "paths_count": int(wl.get("paths_count", 0)),

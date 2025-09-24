@@ -835,9 +835,6 @@ class ODBChatClient:
 
         if mode == "code":
             plan = data.get("plan")
-            if isinstance(plan, dict):
-                print("\n🛠️ Plan:\n" + json.dumps(plan, ensure_ascii=False, indent=2))
-                output_parts.append(json.dumps(plan, ensure_ascii=False))
             code = data.get("code") or ""
             if code:
                 code_out = self._normalize_code(code)
@@ -863,8 +860,19 @@ class ODBChatClient:
             print(f"  durations(ms): search={dur.get('search')} whitelist={dur.get('whitelist')} llm={dur.get('llm')} guard={guard_ms} total={dur.get('total')}")
             print(f"  whitelist: paths={wl.get('paths_count')}, params={wl.get('params_count')}, append_allowed={wl.get('append_allowed')}")
             sp, spp = wl.get('sample_paths') or [], wl.get('sample_params') or []
-            if sp:  print("  sample paths: " + ", ".join(sp))
-            if spp: print("  sample params: " + ", ".join(spp))
+            if sp:
+                print("  sample paths: " + ", ".join(sp))
+            if spp:
+                print("  sample params: " + ", ".join(spp))
+            warnings = debug.get("warnings") or []
+            for w in warnings:
+                print(f"  warning: {w}")
+            if self.debug:
+                plan = data.get("plan")
+                if isinstance(plan, dict):
+                    print("  plan:")
+                    for line in json.dumps(plan, ensure_ascii=False, indent=2).splitlines():
+                        print(f"    {line}")
             output_parts.append(json.dumps(debug, ensure_ascii=False))
 
         # Citations as before...
@@ -930,8 +938,6 @@ async def main():
 
     try:
         try:
-            import sys
-            import os
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if project_root not in sys.path:
                 sys.path.insert(0, project_root)

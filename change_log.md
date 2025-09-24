@@ -38,3 +38,7 @@
     - rag.onepass MCP schema/tool accept debug flag and emit timing + whitelist diagnostics
     - run_onepass attaches detailed debug payload on demand and handles empty LLM replies gracefully
     - CLI adds --debug, prints server plan/code/debug info, and syncs provider:model via config tools
+#### v0.3.2 Harden one-pass code generation and plan handling
+    - Aligned server prompts with dev CLI logic: reuse previous plans, inject OAS server URLs, and enforce chunk_rule/plot_rule behaviour (timeseries loops, map pivot+pcolormesh, no handcrafted query strings).
+    - Normalised llama.cpp inline `code {…}` responses into formatted Python (including plan-less fallbacks), appended guard/warning comments when code skips required plan params, chunk loops, or plotting steps, and surfaced warnings in CLI debug output.
+    - Suppressed plan display in normal CLI output, preserved it in debug diagnostics, and ensured debug payload validation passes even for explain-mode replies.

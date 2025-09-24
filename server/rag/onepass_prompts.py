@@ -10,6 +10,7 @@ def _compact_whitelist(oas: Dict[str, Any]) -> Dict[str, Any]:
         "params": list(oas.get("params") or []),
         "append_allowed": list(oas.get("append_allowed") or oas.get("append") or []),
         "param_enums": oas.get("param_enums") or {},
+        "servers": list(oas.get("servers") or []),
     }
 
 def _sysrule_oas_whitelist(oas: Dict[str, Any]) -> str:
@@ -45,18 +46,22 @@ def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
     return (
         "API planner rules:\n"
         "- Never invent endpoints or params; use ONLY the OAS whitelist.\n"
+        "- If a previous plan is provided, reuse its endpoint/params unless the new question explicitly asks for a change (only adjust the fields mentioned by the user).\n"
         f"(1) Allowed endpoints: {allowed_paths}\n"
         f"(2) Allowed query params: {allowed_params}\n"
         f"(3) 'append' param {append_usage}\n\n"
+        "- Use ONLY param names from the whitelist; do not invent aggregated params like 'bbox' or 'bounding_box'.\n"
+        "- If PLAN has both 'start' and 'end' whitelisted, include both (never leave 'end' empty).\n\n"
         "CSV / JSON selection:\n"
         "- Prefer JSON if the user didn't explicitly ask CSV/file download.\n"
         "- For CSV: choose '/csv' endpoint if present; otherwise ONLY if 'format' enum includes 'csv', set format='csv'.\n\n"
-        "Spatial-related params guidance (use ONLY whitelisted names like lon0,lon1,lat0,lat1 or lon,lat):\n"
-        "- If region/place implied, estimate a relevant bbox or lon/lat.\n"
+        "Spatial-related params guidance:\n"
+        "- If region/place implied, estimate a relevant bbox or lon/lat (use ONLY whitelisted names like lon0,lon1,lat0,lat1 or lon,lat).\n"
         "- Never global extent by default.\n"
         "- Never cross antimeridian/0° in one box; if needed, plan split.\n\n"
         "Temporal params guidance (whitelisted names like start/end):\n"
         "- If a year implied → a full-year range; if month/day implied → tight window.\n"
+        "- Always include BOTH 'start' and 'end' when allowed, covering the intended range.\n"
         "- Use ISO dates (YYYY-MM-DD).\n\n"
         "Param 'append' guidance:\n"
         f"- Allowed values: {allowed_append}\n"
@@ -67,19 +72,34 @@ def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
         "  • 'monthly' (bbox>90°×90°) • 'yearly' (bbox>10°×10°) • 'decade' (bbox≤10°×10° & span>10y) • '' (no chunk)\n\n"
         "Plotting decision (set 'plot_rule' for CODE to follow):\n"
         "  • 時序/趨勢→'timeseries'；地圖/分佈→'map'；否則 'none'.\n\n"
+        "If usr intent to follow up or revise code from previous question, do NOT remove constraints/params in previous plan. Inherit values, or update them if the new question explicitly asks for altering values.\n"
         'Return JSON only: { "endpoint": "/<path>", "params": {"<k>":"<v>"}, "chunk_rule": "<monthly|yearly|decade|>", "plot_rule": "<timeseries|map|none|>" }\n'
     )
 
-def _sysrule_code_assistant() -> str:
+def _sysrule_code_assistant(oas_info: Dict[str, Any]) -> str:
+    servers = oas_info.get("servers") or []
+    base_hint = servers[0] if servers else ECO_BASE_URL
     return (
         "Your are a Python Coder. Rules:\n"
         "- Generate a single runnable Python script (only code, no prose).\n"
-        "- Obey PLAN JSON exactly: EXACT endpoint and params (NO inventions). Do NOT send 'chunk_rule'/'plot_rule' as params.\n"
-        f"- Use BASE_URL='{ECO_BASE_URL}' → requests.get(BASE_URL + endpoint, params=params, timeout=60).\n"
+        "- Obey PLAN JSON exactly: EXACT endpoint and params (NO inventions). Do NOT send 'chunk_rule'/'plot_rule'/'bbox' as params.\n"
+        f"- Determine BASE_URL from OAS servers (use '{base_hint}' unless PLAN specifies otherwise) and call requests.get(BASE_URL + endpoint, params=params, timeout=60).\n"
+        "- NEVER handcraft query strings; start from PLAN['params'], copy into a dict, and pass it via the 'params' argument for every request.\n"
+        "- Do NOT introduce authentication tokens or api_key parameters unless the PLAN explicitly contains them.\n"
+        "- Read 'chunk_rule' from PLAN JSON and implement the required time-splitting loop to fetch API:\n"
+        "    • 'monthly' → loop month by month between PLAN start/end (inclusive).\n"
+        "    • 'yearly'  → loop year by year; each request must stay within a single calendar year.\n"
+        "    • 'decade'  → request in ≤10-year windows (fallback to yearly for remainders <10).\n"
+        "    • ''        → single request (no chunking).\n"
+        "  Split ONLY via start/end dates; keep spatial params fixed; concat results at the end (pd.concat).\n"
+        "  Respect PLAN['params']['start']/'end' when present; compute per-segment start/end strings and update params per request.\n"
+        "  Required pattern: base_params = PLAN['params'].copy(); iterate periods, set params = base_params.copy(); params['start']=segment_start; params['end']=segment_end; requests.get(..., params=params, timeout=60); collect each chunk and pandas.concat at the end.\n"
         "- JSON: r.json() → DataFrame；CSV: only for '/csv' or enum format='csv' using pandas.read_csv(io.StringIO(r.text)).\n"
         "- If bbox crosses 180°/0° split requests and concat.\n"
-        "- If 'date' present → to_datetime.\n"
-        "- For plotting: read 'plot_rule' from PLAN. timeseries→date on x-axis；map→pcolormesh with meshgrid of unique lon/lat.\n"
+        "- If 'date' present → to_datetime and sort chronologically.\n"
+        "- Honor PLAN['plot_rule']: 'timeseries' → use plt.figure(), plt.plot(df['date'], ...), label axes/title/legend, and plt.show(); 'map' → build a 2D grid: pivot_table or reshaping so that Z has shape (len(lat_unique), len(lon_unique)), create Lon, Lat via numpy.meshgrid, then plt.pcolormesh(Lon, Lat, Z, shading='auto') with colorbar and plt.show(); missing/empty → skip plotting.\n"
+        "- For map plots: do NOT call pcolormesh directly on raw columns; you must pivot to a grid first and ensure lon/lat are sorted unique values.\n"
+        "- Do NOT prefix blocks with language labels or markdown fences. Use ONLY the <<<PLAN>>> and <<<CODE>>> tags with raw JSON/code content.\n"
         "- Return the script in a code fence. CODE cannot be empty.\n"
     )
 
@@ -96,7 +116,7 @@ def _fmt_user_template(tmpl: str, *, query: str, top_k: int) -> str:
     # support both {top_k} and {topK}
     return tmpl.format(query=query, top_k=top_k, topK=top_k)
 
-def build_main_prompt(*, query: str, notes: str, whitelist: Dict[str, Any], top_k: int = 6) -> str:
+def build_main_prompt(*, query: str, notes: str, whitelist: Dict[str, Any], top_k: int = 6, prev_plan: Dict[str, Any] | None = None) -> str:
     strict_format = (
         "ABSOLUTE OUTPUT RULES:\n"
         "- Your FIRST characters MUST be exactly: '<<<MODE>>>' (no preface, no commentary).\n"
@@ -106,6 +126,8 @@ def build_main_prompt(*, query: str, notes: str, whitelist: Dict[str, Any], top_
         "- If MODE=code and you do not include a non-empty <<<CODE>>> block, the output is INVALID.\n"
         "ELSE If MODE=explain (for STEP 2B):\n"
         "- Put the answer in <<<ANSWER>>> only (no PLAN/CODE there).\n"
+        "- Never repeat PLAN or CODE contents outside their tagged blocks.\n"
+        "- NEVER wrap any block in markdown fences (no ```json or ```python). Output the tags directly.\n"
         "\n"
         "STRICT OUTPUT FORMAT (use these exact tagged blocks):\n"
         "<<<MODE>>>{code|explain}<<<END>>>\n"
@@ -116,11 +138,12 @@ def build_main_prompt(*, query: str, notes: str, whitelist: Dict[str, Any], top_
 
     classifier = _sysrule_classifier()
     planner    = _sysrule_planner(whitelist)
-    coder      = _sysrule_code_assistant()
+    coder      = _sysrule_code_assistant(whitelist)
     force_zh   = bool(re.search(r"[\u4e00-\u9fff]", query))
     explainer  = _sysrule_explain(force_zh)
     user_tmpl  = "{query}"
     user       = _fmt_user_template(user_tmpl, query=query, top_k=top_k)
+    prev_plan_blob = json.dumps(prev_plan, ensure_ascii=False) if prev_plan else "(none)"
 
     return (
         "You are an ODB assistant that does Classifier, Planner, Coder, and Explainer in ONE pass.\n"
@@ -133,12 +156,13 @@ def build_main_prompt(*, query: str, notes: str, whitelist: Dict[str, Any], top_
         + strict_format + "\n"
         "---- CONTEXT ----\n"
         f"RAG NOTES:\n{(notes or '').strip()}\n\n"
+        f"PREVIOUS PLAN (inherit unless user explicitly changes values):\n{prev_plan_blob}\n\n"
         f"OAS whitelist:\n{json.dumps(_compact_whitelist(whitelist), ensure_ascii=False)}\n\n"
         f"QUESTION:\n{user}\n"
     )
 
 def build_continue_prompt(prev_raw: str, prev_code: str, query: str, whitelist: Dict[str, Any]) -> str:
-    coder = _sysrule_code_assistant()
+    coder = _sysrule_code_assistant(whitelist)
     return (
         "You previously started answering but the code was incomplete. "
         "Continue ONLY the Python code. Do not repeat earlier lines. Keep the same constraints.\n"

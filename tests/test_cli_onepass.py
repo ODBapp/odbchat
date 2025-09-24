@@ -48,7 +48,7 @@ async def test_cli_chat_code(monkeypatch, capsys):
     client.client = DummyMCPClient(responses)
     output = await client.chat("請提供程式碼")
     captured = capsys.readouterr().out
-    assert "Plan" in captured
+    assert "Plan" not in captured
     assert "import requests" in captured
     assert "Citations" in captured
     assert "import requests" in output

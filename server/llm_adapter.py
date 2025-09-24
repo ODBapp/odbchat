@@ -21,7 +21,7 @@ class LLMAdapter:
     def __init__(self):
         self.provider = (os.getenv("ODB_LLM_PROVIDER") or "ollama").strip()
         self.model    = (os.getenv("ODB_LLM_MODEL") or "gemma3:4b").strip()
-        self.timeout  = float(os.getenv("LLM_TIMEOUT", "120"))
+        self.timeout  = float(os.getenv("LLM_TIMEOUT", "300"))
         self.temp     = float(os.getenv("LLM_TEMP", "0.7"))
         self.top_p    = float(os.getenv("LLM_TOP_P", "0.9"))
         self.top_k    = int(os.getenv("LLM_TOP_K", "40"))
@@ -38,8 +38,16 @@ class LLMAdapter:
 
         # stop tokens（過濾掉會立即截斷 one-pass 區塊的危險字串）
         raw_stops = _parse_json_env("LLM_STOP", [])
-        bad = {"<<<", "<<<MODE>>>", "<<<PLAN>>>", "<<<CODE>>>", "<<<ANSWER>>>", "<<<END>>>"}
-        self.stops = [s for s in raw_stops if isinstance(s, str) and s and s not in bad]
+        bad_tokens = {"<<<", "<<<MODE>>>", "<<<PLAN>>>", "<<<CODE>>>", "<<<ANSWER>>>", "<<<END>>>"}
+        stops: list[str] = []
+        for token in raw_stops:
+            if not isinstance(token, str):
+                continue
+            cleaned = token.strip()
+            if not cleaned or cleaned in bad_tokens:
+                continue
+            stops.append(cleaned)
+        self.stops = stops
 
         def _ollama_base(self) -> str:
             url = self.ollama_chat or "http://localhost:11434/api/chat"

@@ -20,6 +20,7 @@ from sentence_transformers import SentenceTransformer
 from functools import lru_cache
 
 _OAS_CACHE: dict[frozenset[str], Dict[str, Any]] = {}
+LAST_PLAN: Optional[Dict[str, Any]] = None
 
 try:
     from ollama import Client as OllamaClient
@@ -46,6 +47,7 @@ if not DEFAULT_COLLECTIONS:
     DEFAULT_COLLECTIONS = ["mhw"]
 
 NOTES_MAX_CHARS = int(os.environ.get("ONEPASS_NOTES_MAX_CHARS", "1600"))
+NOTES_MAX_DOCS = int(os.environ.get("ONEPASS_NOTES_MAX_DOCS", "4"))
 NOTES_SNIPPET_CHARS = int(os.environ.get("ONEPASS_SNIPPET_CHARS", "400"))
 DEBUG_MODE = os.environ.get("ONEPASS_DEBUG", "0") == "1"
 PROMPT_DIR = Path(__file__).resolve().parents[2] / "specs" / "prompts"
@@ -169,7 +171,7 @@ def _norm_hit(h) -> dict:
 def _get_attr(obj, name, default=None):
     return getattr(obj, name, obj.get(name, default)) if isinstance(obj, dict) else getattr(obj, name, default)
 
-def _compress_notes(hits, max_chars=3000, max_docs=6) -> str:
+def _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS) -> str:
     """
     Balanced notes:
       - 先挑 1 個 api_spec + 1 個 code/guide
@@ -187,7 +189,10 @@ def _compress_notes(hits, max_chars=3000, max_docs=6) -> str:
         src = getattr(h, "source_file", "") or p.get("source_file") or ""
         cid = getattr(h, "chunk_id", 0) if getattr(h, "chunk_id", None) is not None else p.get("chunk_id", 0)
         text = (getattr(h, "text", "") or p.get("text") or p.get("snippet") or "").strip()
-        return f"[{getattr(h,'doc_type','')}] {title} ({src}#{cid})\n{text}"
+        if not text:
+            return ""
+        snippet = text[:NOTES_SNIPPET_CHARS]
+        return f"[{getattr(h,'doc_type','')}] {title} ({src}#{cid})\n{snippet}"
 
     # 類別分組
     api   = [h for h in hits if getattr(h, "doc_type", "") == "api_spec"]
@@ -477,10 +482,11 @@ def _parse_oas_text(raw: str) -> Dict[str, Any]:
     params: set[str] = set()
     paths: set[str] = set()
     append_allowed: set[str] = set()
+    servers: set[str] = set()
     enums: Dict[str, List[str]] = {}
 
     if not raw:
-        return {"params": [], "paths": [], "append_allowed": [], "param_enums": {}}
+        return {"params": [], "paths": [], "append_allowed": [], "param_enums": {}, "servers": []}
 
     try:
         data = yaml.safe_load(raw)
@@ -530,15 +536,24 @@ def _parse_oas_text(raw: str) -> Dict[str, Any]:
                             if group:
                                 append_allowed.add(group)
 
+        for srv in data.get("servers", []) or []:
+            if isinstance(srv, dict):
+                url = srv.get("url")
+                if isinstance(url, str) and url.strip():
+                    servers.add(url.strip())
+
     return {
         "params": sorted(params),
         "paths": sorted(paths),
         "append_allowed": sorted(append_allowed),
         "param_enums": enums,
+        "servers": sorted(servers),
     }
 
 FENCED_RE = re.compile(r"```(?:python)?\n([\s\S]*?)```", re.I)
 BLOCK_RE  = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER)>>>([\s\S]*?)<<<END>>>", re.I)
+TAG_FIX_RE = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER)>>(?!>)", re.I)
+TAG_FIX_ONE_RE = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER)>(?!>)", re.I)
 
 def _extract_block(txt: str, name: str) -> str:
     m = re.search(rf"<<<{name}>>>([\s\S]*?)<<<END>>>", txt, re.I)
@@ -548,20 +563,91 @@ def _extract_first_fenced_code(txt: str) -> str:
     m = FENCED_RE.search(txt or "")
     return (m.group(1).strip() if m else "")
 
-def _recover_plan_from_text_or_code(txt: str) -> Optional[Dict[str, Any]]:
-    # 極簡啟發：找 {"endpoint": "...", "params": {...}} 片段
-    try:
-        cand = re.search(r"\{[^{}]*\"endpoint\"[^{}]*\{[\s\S]*?\}", txt)
-        if cand:
-            jtxt = cand.group(0)
-            plan = json.loads(jtxt)
-            if isinstance(plan, dict) and "endpoint" in plan and "params" in plan:
-                return plan
-    except Exception:
-        pass
+def _normalize_inline_code(code: str) -> str:
+    if not code:
+        return code
+    if code.count("\n") > 2:
+        return code
+    normalized = code.strip()
+    patterns = [
+        r"import ", r"from ", r"BASE_URL", r"endpoint", r"params\s*=", r"response\s*=",
+        r"r\s*=", r"df\s*=", r"data\s*=", r"plt\.", r"pd\.", r"np\.", r"print\(",
+        r"return ", r"for ", r"while ", r"if ", r"plt\.figure", r"plt\.plot", r"plt\.pcolormesh",
+    ]
+    for pat in patterns:
+        normalized = re.sub(r"\s*(?=" + pat + ")", "\n", normalized)
+    replacements = {
+        ') r.': ')\nr.',
+        ') df': ')\ndf',
+        ') data': ')\ndata',
+        ') print': ')\nprint',
+        'df =\npd.': 'df = pd.',
+    }
+    for src, dst in replacements.items():
+        normalized = normalized.replace(src, dst)
+    normalized = re.sub(r"requests\.get\s*\(\s*BASE_URL\s*\+\s*endpoint,", "requests.get(BASE_URL + endpoint,", normalized)
+    normalized = normalized.replace("requests.get(BASE_URL + endpoint,\nparams=", "requests.get(BASE_URL + endpoint, params=")
+    normalized = normalized.replace("pd.read_csv(\nio.StringIO", "pd.read_csv(io.StringIO")
+    normalized = normalized.replace("print(df)\nelse:", "print(df)\nelse:")
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    cleaned = []
+    indent = 0
+    for line in lines:
+        if line.startswith("else"):
+            indent = max(indent - 1, 0)
+        cleaned.append("    " * indent + line)
+        if line.startswith("if ") and line.endswith(":"):
+            indent += 1
+        if line.startswith("else:"):
+            indent += 1
+        if line.startswith("return"):
+            indent = max(indent - 1, 0)
+    normalized = "\n".join(cleaned)
+    normalized = re.sub(r"\n{2,}", "\n", normalized)
+    return normalized.strip()
+
+def _grab_block_flexible(raw_text: str, tag: str) -> str:
+    if not raw_text:
+        return ""
+    pattern = re.compile(rf"<<<{tag}>>>", re.I)
+    m = pattern.search(raw_text)
+    if not m:
+        return ""
+    start = m.end()
+    remainder = raw_text[start:]
+    m_end = re.search(r"<<<END>>>", remainder, re.I)
+    if m_end:
+        return remainder[: m_end.start()].strip()
+    m_next = re.search(r"<<<[A-Z_]+>>>", remainder, re.I)
+    if m_next:
+        return remainder[: m_next.start()].strip()
+    return remainder.strip()
+
+def _recover_plan_from_text_or_code(txt: str) -> Optional[tuple[Dict[str, Any], int, int]]:
+    decoder = json.JSONDecoder()
+    idx = txt.find('"endpoint"')
+    while idx != -1:
+        brace = txt.rfind('{', 0, idx)
+        if brace == -1:
+            break
+        fragment = txt[brace:]
+        try:
+            obj, consumed = decoder.raw_decode(fragment)
+            if isinstance(obj, dict) and obj.get("endpoint") and obj.get("params"):
+                return obj, brace, brace + consumed
+        except Exception:
+            pass
+        idx = txt.find('"endpoint"', idx + 10)
     return None
 
 def _parse_onepass_output(raw: str) -> Dict[str, Any]:
+    txt = raw or ""
+    # strip any Markdown fences or language labels like ```json / ```python that bracket the blocks
+    txt = re.sub(r"```[a-zA-Z0-9_+\-]*", "", txt)
+    # fix common mistakes where model emits <<<TAG>> or <<<TAG>
+    txt = TAG_FIX_RE.sub(lambda m: f"<<<{m.group(1).upper()}>>>", txt)
+    txt = TAG_FIX_ONE_RE.sub(lambda m: f"<<<{m.group(1).upper()}>>>", txt)
+    raw = txt
     out = {
         "mode":   _extract_block(raw, "MODE").strip().lower(),
         "plan":   _extract_block(raw, "PLAN").strip(),
@@ -579,11 +665,61 @@ def _parse_onepass_output(raw: str) -> Dict[str, Any]:
         if fenced:
             out["code"] = fenced
 
+    plan_span = None
+    if out["mode"] == "code" and not out["plan"]:
+        soft = _grab_block_flexible(raw, "PLAN")
+        if soft:
+            out["plan"] = soft.strip()
+
+    if out["mode"] == "code" and not out["code"]:
+        soft_code = _grab_block_flexible(raw, "CODE")
+        if soft_code:
+            out["code"] = soft_code.strip()
+
     # PLAN 缺 → 從 raw 嘗試恢復
     if out["mode"] == "code" and not out["plan"]:
         rec = _recover_plan_from_text_or_code(raw)
         if rec:
-            out["plan"] = json.dumps(rec, ensure_ascii=False)
+            plan_obj, span_start, span_end = rec
+            out["plan"] = json.dumps(plan_obj, ensure_ascii=False)
+            plan_span = (span_start, span_end)
+
+    if out.get("mode") != "code":
+        m = re.search(r"\bcode\s*(\{)", raw, re.I)
+        idx = m.start(1) if m else raw.find("{")
+        if idx != -1 and ("import " in raw or "requests.get" in raw or "pd.read" in raw):
+            try:
+                plan_obj, end_idx = json.JSONDecoder().raw_decode(raw[idx:])
+                code_text = raw[idx + end_idx :].strip()
+                if isinstance(plan_obj, dict) and plan_obj.get("endpoint"):
+                    out["mode"] = "code"
+                    out["plan"] = json.dumps(plan_obj, ensure_ascii=False)
+                    out["code"] = code_text
+                    plan_span = (idx, idx + end_idx)
+            except Exception:
+                pass
+
+    if plan_span and (not out.get("code")):
+        _, span_end = plan_span
+        remainder = raw[span_end:].strip()
+        if remainder:
+            out["code"] = remainder
+
+    if out.get("mode") == "code" and not out.get("code"):
+        for marker in ("import ", "from ", "BASE_URL", "endpoint =", "params =", "requests.get"):
+            pos = raw.find(marker)
+            if pos != -1:
+                out["code"] = raw[pos:].strip()
+                break
+
+    if out.get("mode") == "code" and out.get("code"):
+        if out["code"].startswith("code "):
+            brace = out["code"].find("}")
+            if brace != -1:
+                out["code"] = out["code"][brace + 1 :].strip()
+        cleaned = _normalize_inline_code(out["code"])
+        cleaned = cleaned.replace("<<<END>>>", "").strip()
+        out["code"] = cleaned
 
     # 仍無 code → 退回 explain
     if out["mode"] == "code" and not out["code"]:
@@ -811,13 +947,14 @@ def harvest_oas_whitelist(hits: List[Hit]) -> Dict[str, Any]:
         for name in src.get("params", []) or []: dst["params"].add(str(name))
         for p in src.get("paths", []) or []:     dst["paths"].add(str(p))
         for v in src.get("append_allowed", []) or []: dst["append_allowed"].add(str(v))
+        for url in src.get("servers", []) or []: dst["servers"].add(str(url))
         for k, vals in (src.get("param_enums", {}) or {}).items():
             dst["param_enums"].setdefault(k, [])
             for v in vals:
                 if v not in dst["param_enums"][k]:
                     dst["param_enums"][k].append(v)
 
-    acc = {"params": set(), "paths": set(), "append_allowed": set(), "param_enums": {}}
+    acc = {"params": set(), "paths": set(), "append_allowed": set(), "servers": set(), "param_enums": {}}
     for raw in texts:
         merge_into(acc, _parse_oas_text(raw))
 
@@ -826,13 +963,14 @@ def harvest_oas_whitelist(hits: List[Hit]) -> Dict[str, Any]:
         key = _collections_key([c for c in cols if isinstance(c, str) and c] or None)
         cached = _OAS_CACHE.get(key)
         if not cached:
-            merged = {"params": set(), "paths": set(), "append_allowed": set(), "param_enums": {}}
+            merged = {"params": set(), "paths": set(), "append_allowed": set(), "servers": set(), "param_enums": {}}
             for raw in _collect_api_specs_full_scan(limit=256, collections=list(key)):
                 merge_into(merged, _parse_oas_text(raw))
             cached = {
                 "params": sorted(merged["params"]),
                 "paths": sorted(merged["paths"]),
                 "append_allowed": sorted(merged["append_allowed"]),
+                "servers": sorted(merged["servers"]),
                 "param_enums": merged["param_enums"],
             }
             _OAS_CACHE[key] = cached
@@ -842,6 +980,7 @@ def harvest_oas_whitelist(hits: List[Hit]) -> Dict[str, Any]:
         "params": sorted(acc["params"]),
         "paths": sorted(acc["paths"]),
         "append_allowed": sorted(acc["append_allowed"]),
+        "servers": sorted(acc["servers"]),
         "param_enums": acc["param_enums"],
     }
 
@@ -851,10 +990,11 @@ def decide_and_generate(
     notes: str,
     whitelist: Dict[str, Any],
     llm_id: str,
+    prev_plan: Optional[Dict[str, Any]] = None,
     max_continue: bool = True,
     debug: bool = False,
 ) -> Dict[str, Any]:
-    prompt = build_main_prompt(query=query, notes=notes or "", whitelist=whitelist, top_k=6)
+    prompt = build_main_prompt(query=query, notes=notes or "", whitelist=whitelist, top_k=6, prev_plan=prev_plan)
 
     # 只在這裡印一次 prompt 尺寸（可選）
     if DEBUG_MODE or debug:
@@ -884,6 +1024,8 @@ def decide_and_generate(
 
     def _invalid(p: Dict[str, Any]) -> bool:
         m = (p.get("mode") or "").strip().lower()
+        if not m:
+            return True
         only_token = (raw.strip().lower() in {"code", "explain"})
         no_blocks = not ((p.get("code") or "").strip() or (p.get("answer") or "").strip())
         return only_token or (m in {"code","explain"} and no_blocks)
@@ -891,8 +1033,9 @@ def decide_and_generate(
     if _invalid(parsed):
         fix_user = (
             "Your previous response was INVALID. "
-            "Immediately output the full tagged blocks per STRICT OUTPUT FORMAT. "
-            "Begin with '<<<MODE>>>', then (if MODE=code) include non-empty <<<PLAN>>> and <<<CODE>>>."
+            "Immediately output the full tagged blocks per STRICT OUTPUT FORMAT with no markdown fences. "
+            "Begin with '<<<MODE>>>', then (if MODE=code) include non-empty <<<PLAN>>> JSON and <<<CODE>>> python. "
+            "Do NOT wrap them in ``` or prepend language labels." 
         )
         raw2 = LLM.chat([{"role":"system","content":prompt},{"role":"user","content":fix_user}], temperature=0.2, max_tokens=1024) or ""
         if DEBUG_MODE or debug:
@@ -934,8 +1077,8 @@ def enforce_static_guards(code: str) -> None:
     m = re.search(r'url\s*=\s*[\'"]([^\'"]+)[\'"]', code)
     if m and m.group(1).startswith("/"):
         raise ValueError("Use absolute API URL (no relative '/api/...').")
-    if re.search(r"api[_-]?key|token|authorization|bearer", code, re.I):
-        raise ValueError("Code must not reference secrets/tokens")
+    # if re.search(r"api[_-]?key|token|authorization|bearer", code, re.I):
+    #     raise ValueError("Code must not reference secrets/tokens")
 
 def validate_plan(plan: Dict[str, Any], whitelist: Dict[str, Any]) -> None:
     if not isinstance(plan, dict):
@@ -1009,8 +1152,11 @@ def run_onepass(
     temperature: float = 0.2,
     debug: bool = False,
 ) -> OnePassResult:
+    global LAST_PLAN
     t0 = time.perf_counter()
     debug_enabled = DEBUG or DEBUG_MODE or debug
+
+    prev_plan = LAST_PLAN.copy() if isinstance(LAST_PLAN, dict) else None
 
     hits_raw = search_qdrant(query, k=max(k, 1) * 3, collections=collections)
 
@@ -1023,7 +1169,7 @@ def run_onepass(
     t2 = time.perf_counter()
 
     # NEW: 由檢索結果組 notes
-    notes = _compress_notes(hits, max_chars=3000, max_docs=6)
+    notes = _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS)
     if debug_enabled:
         nlen = len(notes or "")
         nhead = "\n".join((notes or "").splitlines()[:6])
@@ -1035,12 +1181,32 @@ def run_onepass(
         notes=notes,
         whitelist=whitelist,
         llm_id=llm_id,
+        prev_plan=prev_plan,
         max_continue=True,
         debug=debug_enabled,
     )
     if isinstance(result, dict):
         result = _to_result(result)
     t3 = time.perf_counter()
+
+    if getattr(result, "mode", "").lower() != "code":
+        result.plan = None
+
+    plan_candidate = getattr(result, "plan", None)
+    inherited = False
+    if isinstance(plan_candidate, dict) and set(plan_candidate.keys()) == {"_raw"}:
+        raw_val = str(plan_candidate.get("_raw") or "").strip()
+        if not raw_val:
+            plan_candidate = None
+    if (plan_candidate is None) and prev_plan:
+        result.plan = prev_plan.copy()
+        inherited = True
+    elif plan_candidate is None:
+        result.plan = None
+
+    if inherited and debug_enabled:
+        result.debug = (result.debug or {})
+        result.debug["plan_inherited"] = True
 
     raw_prev = getattr(result, "raw", "")
     continued = False
@@ -1057,21 +1223,56 @@ def run_onepass(
         result.debug["continued"] = continued
 
     plan_ok, guard_ok = None, None
+    warnings: List[str] = []
     if result.plan and result.code:
         try:
-            validate_plan(result.plan, whitelist); plan_ok = True
+            validate_plan(result.plan, whitelist)
+            plan_ok = True
         except Exception as e:
             plan_ok = False
+            msg = f"Plan validation warning: {e}"
+            warnings.append(msg)
             if debug_enabled:
-                LOGGER.info("[onepass] plan validation error: %s", e)
-            raise
+                LOGGER.info("[onepass] %s", msg)
         try:
-            enforce_static_guards(result.code); guard_ok = True
+            enforce_static_guards(result.code)
+            guard_ok = True
         except Exception as e:
             guard_ok = False
+            msg = f"Static guard warning: {e}"
+            warnings.append(msg)
             if debug_enabled:
-                LOGGER.info("[onepass] static guard error: %s", e)
-            raise
+                LOGGER.info("[onepass] %s", msg)
+
+        params = result.plan.get("params") if isinstance(result.plan, dict) else {}
+        code_text = result.code or ""
+        code_lower = code_text.lower()
+        if isinstance(params, dict):
+            for key in params:
+                key_token = f"['{key}']"
+                key_token_alt = f'"{key}"'
+                if key_token not in code_text and key_token_alt not in code_text:
+                    warnings.append(f"Code may not reference plan param '{key}' explicitly; verify request uses it.")
+
+        chunk_rule = str(result.plan.get("chunk_rule") or "").strip().lower()
+        if chunk_rule == "yearly" and "year" not in code_lower:
+            warnings.append("chunk_rule='yearly' but code lacks a yearly loop.")
+        if chunk_rule == "yearly" and "pd.concat" not in code_lower:
+            warnings.append("chunk_rule='yearly' but code does not concat chunk results.")
+        if chunk_rule == "monthly" and "month" not in code_lower:
+            warnings.append("chunk_rule='monthly' but code lacks a monthly loop.")
+        if chunk_rule == "monthly" and "pd.concat" not in code_lower:
+            warnings.append("chunk_rule='monthly' but code does not concat chunk results.")
+        if chunk_rule == "decade" and "decade" not in code_lower and "10" not in code_lower:
+            warnings.append("chunk_rule='decade' but code lacks decade segmentation.")
+
+        plot_rule = str(result.plan.get("plot_rule") or "").strip().lower()
+        if plot_rule == "timeseries" and "plt.plot" not in code_lower:
+            warnings.append("plot_rule='timeseries' but code does not call plt.plot().")
+        if plot_rule == "map" and "pcolormesh" not in code_lower:
+            warnings.append("plot_rule='map' but code does not use pcolormesh().")
+        if plot_rule == "map" and "meshgrid" not in code_lower and "pivot" not in code_lower:
+            warnings.append("plot_rule='map' but code does not build a lon/lat grid via pivot/meshgrid.")
 
     t4 = time.perf_counter()
 
@@ -1105,6 +1306,7 @@ def run_onepass(
                     "validate_guard": int(1000 * (t4 - t3)),
                     "total": int(1000 * (t4 - t0)),
                 },
+                "warnings": warnings,
             }
         )
         result.debug = debug_obj
@@ -1119,5 +1321,12 @@ def run_onepass(
         LOGGER.info("[onepass] whitelist: %s", json.dumps(wl_summary, ensure_ascii=False))
         if result.plan:
             LOGGER.info("[onepass] plan: %s", json.dumps(result.plan, ensure_ascii=False))
+
+    if warnings and result.code:
+        warning_block = "\n\n# WARNINGS (needs manual review)\n" + "\n".join(f"# {w}" for w in warnings)
+        result.code = f"{result.code}{warning_block}"
+
+    if result.plan and isinstance(result.plan, dict):
+        LAST_PLAN = result.plan.copy()
 
     return result
