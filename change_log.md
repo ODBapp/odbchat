@@ -42,3 +42,12 @@
     - Aligned server prompts with dev CLI logic: reuse previous plans, inject OAS server URLs, and enforce chunk_rule/plot_rule behaviour (timeseries loops, map pivot+pcolormesh, no handcrafted query strings).
     - Normalised llama.cpp inline `code {…}` responses into formatted Python (including plan-less fallbacks), appended guard/warning comments when code skips required plan params, chunk loops, or plotting steps, and surfaced warnings in CLI debug output.
     - Suppressed plan display in normal CLI output, preserved it in debug diagnostics, and ensured debug payload validation passes even for explain-mode replies.
+#### v0.3.3 Proxy GHRSST MCP tools via odbchat server
+    - Registered upstream `ghrsst.point_value` and `ghrsst.bbox_mean` FastMCP tools so clients can query eco.odb.ntu.edu.tw/mcp/ghrsst through the local server.
+    - Added proxy helper tests covering payload forwarding and validation.
+    - Forced uvicorn to use the classic `websockets` backend for compatibility with the deployment environment.
+#### v0.3.4 Add lightweight MCP router
+    - Introduced `router.answer` tool that classifies queries into `mcp_tools|explain|code` and calls GHRSST tools when appropriate.
+    - Updated CLI chat flow to use the router and render SST results directly.
+    - Added router unit tests plus CLI coverage for the new MCP branch.
+    - Improved GHRSST tool handling with optional `method="nearest"` fallback and user-facing error messages when data is unavailable.

@@ -256,14 +256,10 @@ class ODBChatClient:
         use_model = model or self.current_model or DEFAULT_MODEL
         if self.client:
             try:
-                payload = {
-                    "query": query,
-                    "top_k": 6,
-                    "temperature": self.temperature,
-                }
+                payload = {"query": query}
                 if self.debug:
                     payload["debug"] = True
-                result = await self.client.call_tool("rag.onepass_answer", payload)
+                result = await self.client.call_tool("router.answer", payload)
                 data = self._extract_json(result)
                 return self._render_onepass_result(data)
             except Exception as exc:
@@ -840,6 +836,19 @@ class ODBChatClient:
                 code_out = self._normalize_code(code)
                 print("\n" + code_out)
                 output_parts.append(code_out)
+        elif mode == "mcp_tools":
+            text = data.get("text") or ""
+            if text:
+                print("\n" + text)
+                output_parts.append(text)
+            if self.debug:
+                result = data.get("result")
+                if result is not None:
+                    print("\n🛠 MCP Result:")
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                args = data.get("arguments")
+                if args is not None:
+                    print("Arguments:", json.dumps(args, ensure_ascii=False))
         else:
             text = data.get("text") or data.get("code") or ""
             if text:

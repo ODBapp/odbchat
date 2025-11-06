@@ -25,13 +25,17 @@ mcp = FastMCP("odb-chat-server")
 
 # mcp function plugins
 from server.api.mhw_mcp import register_mhw_tools
+from server.api.ghrsst_mcp_proxy import register_ghrsst_tools
+from server.router_classifier import register_router_tool
 from server.tools.rag_onepass_tool import register_rag_onepass_tool
 from server.rag.onepass_core import get_embedder, embedding_dim, get_qdrant, harvest_oas_whitelist, search_qdrant
 from server.tools.config_tool import register_rag_config_tool
 
 register_mhw_tools(mcp)
+register_ghrsst_tools(mcp)
 register_rag_onepass_tool(mcp)
 register_rag_config_tool(mcp)
+register_router_tool(mcp)
 
 def _warmup():
     try:
@@ -252,7 +256,15 @@ async def odb_knowledge_base() -> str:
 def main():
     """Run the MCP server in HTTP mode for mcp-use compatibility"""
     # Use FastMCP's HTTP transport so clients can POST/HTTP
-    mcp.run(transport="http", host="127.0.0.1", port=8045, path="/mcp")
+    # Force classic websockets implementation; FastMCP defaults to
+    # "websockets-sansio", which is unavailable on older uvicorn builds in this env.
+    mcp.run(
+        transport="http",
+        host="127.0.0.1",
+        port=8045,
+        path="/mcp",
+        uvicorn_config={"ws": "websockets"},
+    )
 
 if __name__ == "__main__":
     main()

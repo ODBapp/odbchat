@@ -19,12 +19,12 @@ wget https://huggingface.co/bartowski/openai_gpt-oss-20b-GGUF/resolve/main/opena
 nvidia-smi
 nvcc --version && which nvcc
 sudo apt update
-sudo apt-get install -y build-essential git ninja-build python3-pip
+sudo apt-get install -y build-essential git ninja-build python3-pip libopenblas-dev
 python3 -m pip install --user cmake
 https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp
 sudo apt-get install -y gcc-9 g++-9
-cmake -B build -G Ninja -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 -DCUDAToolkit_ROOT=/usr/local/cuda-11.8 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8/bin -DCMAKE_CUDA_COMPILER=/usr/local/cuda-11.8/bin/nvcc -DCMAKE_C_COMPILER=/usr/bin/gcc-9 -DCMAKE_CXX_COMPILER=/usr/bin/g++-9
+cmake -B build -G Ninja -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 -DCUDAToolkit_ROOT=/usr/local/cuda-11.8 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8/bin -DCMAKE_CUDA_COMPILER=/usr/local/cuda-11.8/bin/nvcc -DCMAKE_C_COMPILER=/usr/bin/gcc-9 -DCMAKE_CXX_COMPILER=/usr/bin/g++-9 -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS
 cmake --build build -j
 
 # execution for /home/odbadmin/backup/src/llama.cpp/build/bin/llama-server
