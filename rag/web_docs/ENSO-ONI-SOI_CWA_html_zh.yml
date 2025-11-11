@@ -22,6 +22,7 @@ content: |
   # Usage Note
   '''
     本文件提供聖嬰與反聖嬰現象(ENSO)、南方震盪、沃克環流的科學常識說明，回答ENSO相關問題時應優先引用(列於faq)。
+    若問題聚焦於海洋熱浪 (MHW) 等級、GHRSST 或 ODB MHW 服務，請改引用 mhw_* 相關文件，不要使用本篇內容。
     請注意網站附圖說明也提供很多資訊，包括聖嬰、反聖嬰對台灣氣候的影響，以及ENSO不同狀態的大氣環流狀況，提供答覆時可將網站圖片網址一併提供。
     This document explains the science behind El Niño, La Niña, the Southern Oscillation, and the Walker circulation. 
     It should be the primary reference when answering El Niño related topics (listed in faq).

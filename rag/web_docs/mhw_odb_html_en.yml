@@ -9,7 +9,7 @@ canonical_url: "https://eco.odb.ntu.edu.tw/pub/MHW/?lang=en"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "ddba171bda668c60390ee6fab602b037efb73539"
-tags: ["Marine Heatwaves", "MHW database", ODB, "Open Data", "SST anomalies", method, overview]
+tags: ["Marine Heatwaves", "MHW database", ODB, "Open Data", "MHW severity levels", method, overview]
 related_to:
   - doc_id: ["e92105f573812706c700e35c0d1eee44e62ee8cc", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "4aa0def856dfdebb205135c3a9d5a76a55110e38"]
   - collection: "mhw"
@@ -19,7 +19,7 @@ source_file: "web_docs/md/mhw_odb_html_en.md"
 source_type: web
 version: v1
 purpose: "To introduce how the ODB Global Marine Heatwave (MHW) Database evaluates MHW events, presents MHW data, provides open data downloads, OpenAPI access, and usage on the ODB Hidy Viewer"
-faq: ["How to download marine heatwave data", "Visualize SST anomalies or marine heatwaves", "How to use the graphical interface to find and display ocean data"]
+faq: ["How to download marine heatwave data", "What criteria are used to classify marine heatwaves?", "How to use the graphical interface to find and display ocean data"]
 content: |
   # Usage Note
   '''
@@ -37,17 +37,12 @@ content: |
   ## About
   
   Global warming and the ensuing climate crisis have led to an ongoing rise in Earth's temperatures. Unusually high temperatures during heatwaves can be deadly on land, and the oceans are equally vulnerable to this threat. When seawater remains abnormally warm for an extended period compared to historical average temperatures, it's referred to as 'marine heatwaves' (MHWs) ([Pearce et al., 2011](https://fish.gov.au/Archived-Reports/Documents/Pearce_et_al_2011.pdf); [Hobday et al., 2016](https://www.sciencedirect.com/science/article/pii/S0079661116000057)). The MHWs can cover vast areas, spanning thousands of square kilometers and lasting for weeks or even months ([Di Lorenzo and Mantua, 2016](https://www.nature.com/articles/nclimate3082)). Such prolonged warming events significantly affect marine life, ecosystems, and fisheries. To raise general awareness about MHWs, ODB provides MHWs' open data that is compiled from [NOAA's OISST](https://www.ncei.noaa.gov/products/optimum-interpolation-sst) data at a 0.25° x 0.25° resolution ([Huang et al. 2021](https://journals.ametsoc.org/view/journals/clim/34/8/JCLI-D-20-0166.1.xml)). Following [Jacox et al.'s (2020)](https://www.nature.com/articles/s41586-020-2534-z) approach, ODB evaluates MHW occurrences for each month from 1982 to the present, covering approximately 40 years (for more details, refer to the 'Method' section). The severity of MHWs is classified into distinct levels according to the criteria defined by [Hobday et al.'s (2018)](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves). These categorized MHW levels, as well as the monthly mean SST, SST anomalies, and thermal displacements\* caused by MHWs, collectively constitute our comprehensive global database. The datasets will receive monthly updates and are available for download. Furthermore, we provide access to [WMS](https://ecodata.odb.ntu.edu.tw/geoserver/marineheatwave/wms?service=WMS&request=GetCapabilities) and [WMTS](https://ecodata.odb.ntu.edu.tw/geoserver/gwc/service/wmts/?service=WMTS&request=getCapabilities) layers for MHWs (see hyperlinks), and the [instruction](https://oceandatabank.github.io/MHW_QGIS/) for application on QGIS.
-  
   According to the [2022 Intergovernmental Panel on Climate Change (IPCC) report](https://doi.org/10.1017/9781009325844), the frequency, intensity, and duration of global MHWs have increased and will continue to rise into the future. Given the increasingly frequency and occurrence of MHWs ([Frölicher et al. 2018](https://www.nature.com/articles/s41586-018-0383-9); [Oliver et al., 2018](https://www.nature.com/articles/s41467-018-03732-9)), ODB aims to support research on the spatiotemporal variations of MHWs, their potential impact on marine life and provide a reference for predicting and responding to MHWs.
-  
-  \* Thermal Displacement: In the context of MHW, 'thermal displacement' refers to the minimum distance required to follow the long-term average sea surface temperature ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z)). Specifically, thermal displacement signifies the range over which marine heatwaves influence surrounding marine ecosystems, particularly concerning the movement, distribution range, and ecosystem function of marine organisms.
-  
+  Thermal Displacement: In the context of MHW, 'thermal displacement' refers to the minimum distance required to follow the long-term average sea surface temperature ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z)). Specifically, thermal displacement signifies the range over which marine heatwaves influence surrounding marine ecosystems, particularly concerning the movement, distribution range, and ecosystem function of marine organisms.
+  MHW severity levels:
   ![Marine heatwaves level](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hobday_2018_2.jpg)
-  
-  Marine heatwaves are classified according to [Hobday et al., 2018](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves). Monthly SST anomalies fall into four levels: below twice the threshold, two to three times the threshold, three to four times the threshold, and above four times the threshold. These levels are labeled as Moderate, Strong, Severe, and Extreme, respectively. Figure adapted from [Hobday et al. (2018)](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves).
-  
+  Detailed thresholds for **Moderate, Strong, Severe, Extreme** events follow Hobday et al. (2018).  Refer to the fact sheet “Marine Heatwave Severity Levels (ODB)” for the numeric multiples used in ODB datasets.
   ![Marine heatwaves time-series](https://eco.odb.ntu.edu.tw/pub/MHW/assets/time_series_example.jpg)
-  
   In the waters near Taiwan at longitude 122.625°E and latitude 25.375°N, the time series of the marine heatwave level from January 2020 to now.
   
   ## Method
@@ -81,11 +76,8 @@ content: |
   ### Results
   
   ![2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly)](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_level.jpg)  
-    
   2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly)
-    
   ![2025/07 Thermal Displacement caused by Marine Heatwaves](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_td.jpg)
-  
   2025/07 Thermal Displacement caused by Marine Heatwaves
   
   ## Download
@@ -116,15 +108,10 @@ content: |
   ### Download by entering the coordinates below
   
   Start Longitude
-  
   End Longitude
-  
   Start Latitude 
-  
   End Latitude 
-  
   Data Download (multiple)
-  
   Monthly mean SST（每月海表平均溫度） Monthly SST Anomalies（每月海表溫度距平值） Monthly MHW levels（每月海洋熱浪級數） Themal Displacements（每月熱位移）
   
   #Connect to your software from our API  
@@ -140,13 +127,9 @@ content: |
   #output example
   
   lon,lat,date,level,sst,sst\_anomaly,td
-  
   120.875,25.375,2023-04-01,0,22.426334,0.6179904937744141,
-  
   120.875,25.375,2023-05-01,0,25.035807,0.5337085723876953,
-  
   120.875,25.375,2023-06-01,1,27.591667,1.1035003662109375,141.22131
-  
   120.875,25.375,2023-07-01,1,28.8, 1.2374820709228516,57.366695
   
   ![hidy](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidy_mhw.svg)

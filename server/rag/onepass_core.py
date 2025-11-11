@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 from server.rag.onepass_prompts import build_continue_prompt, build_main_prompt
 from server.llm_adapter import LLM
+from server.time_utils import today_tpe
 
 import yaml
 from qdrant_client import QdrantClient
@@ -61,6 +62,54 @@ _qdrant: Optional[QdrantClient] = None
 _ollama: Optional[OllamaClient] = None
 _system_prompt: Optional[str] = None
 _user_prompt_template: Optional[str] = None
+
+CODE_KEYWORDS = (
+    "code",
+    "script",
+    "python",
+    "程式",
+    "程式碼",
+    "寫程式",
+    "示範程式",
+    "程式範例",
+    "繪圖",
+    "plot",
+    "畫圖",
+)
+
+FOLLOWUP_KEYWORDS = (
+    "改",
+    "換",
+    "更新",
+    "修改",
+    "再",
+    "重新",
+    "同樣",
+    "上一",
+    "繼續",
+    "程式碼有錯",
+    "follow",
+    "again",
+    "update",
+    "change",
+    "same",
+    "revise",
+)
+
+GHRSST_KEYWORDS = (
+    "海溫",
+    "水溫",
+    "sst",
+    "sea surface temperature",
+    "sea-surface temperature",
+    "sea temperature",
+    "surface temp",
+)
+GHRSST_GEO_TOKENS = ("lon", "lat", "bbox", "經緯", "座標", "範圍")
+COORD_PAIR_RE = re.compile(r"\(\s*-?\d{1,3}(?:\.\d+)?,\s*-?\d{1,2}(?:\.\d+)?\s*\)")
+BBOX_RE = re.compile(
+    r"\[\s*-?\d{1,3}(?:\.\d+)?(?:\s*,\s*-?\d{1,3}(?:\.\d+)?){3,}\s*\]"
+)
 
 # --- Hit-safe accessors (support Hit or dict) ---
 def _hit_payload(h) -> dict:
@@ -150,6 +199,39 @@ def _score_of(h) -> float:
         return float(s) if s is not None else 0.0
     except Exception:
         return 0.0
+
+
+def _is_cjk(ch: str) -> bool:
+    return "\u4e00" <= ch <= "\u9fff"
+
+
+def _query_is_meaningful(query: str) -> bool:
+    if not query or not query.strip():
+        return False
+    meaningful = sum(1 for ch in query if ch.isalnum() or _is_cjk(ch))
+    if meaningful < 2:
+        return False
+    condensed = "".join(ch for ch in query if not ch.isspace())
+    if condensed and len(set(condensed)) <= 1:
+        return False
+    return True
+
+
+def _wants_code(query: str) -> bool:
+    if not query:
+        return False
+    lowered = query.lower()
+    return any(keyword in lowered for keyword in CODE_KEYWORDS)
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    if not text:
+        return set()
+    tokens = set(re.findall(r"[a-z0-9_]{2,}", text.lower()))
+    tokens.update(ch for ch in text if _is_cjk(ch))
+    return tokens
+
+
 
 def _norm_hit(h) -> dict:
     """Normalize to a dict we can work with downstream."""
@@ -342,6 +424,27 @@ def _force_include_api_spec(all_hits: Sequence[Hit], selected: List[Hit]) -> Lis
                 out.append(h)
             return out
     return selected
+
+
+def _select_citation_hits(hits: Sequence[Hit], answer_text: str, limit: int) -> List[Hit]:
+    if not hits:
+        return []
+    limit = max(1, limit or 1)
+    tokens = _tokenize_for_overlap(answer_text)
+    if not tokens:
+        return list(hits[:limit])
+    scored: List[tuple[float, int, Hit]] = []
+    for idx, hit in enumerate(hits):
+        snippet_tokens = _tokenize_for_overlap(_text_of(hit))
+        overlap = len(tokens & snippet_tokens)
+        if overlap <= 0:
+            continue
+        score = overlap + 0.1 * max(0.0, _score_of(hit))
+        scored.append((score, idx, hit))
+    if not scored:
+        return list(hits[:limit])
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [hit for _, _, hit in scored[:limit]]
 
 
 def collect_rag_notes(hits: Sequence[Hit], max_chars: int = NOTES_MAX_CHARS) -> str:
@@ -551,9 +654,9 @@ def _parse_oas_text(raw: str) -> Dict[str, Any]:
     }
 
 FENCED_RE = re.compile(r"```(?:python)?\n([\s\S]*?)```", re.I)
-BLOCK_RE  = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER)>>>([\s\S]*?)<<<END>>>", re.I)
-TAG_FIX_RE = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER)>>(?!>)", re.I)
-TAG_FIX_ONE_RE = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER)>(?!>)", re.I)
+BLOCK_RE  = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER|MCP)>>>([\s\S]*?)<<<END>>>", re.I)
+TAG_FIX_RE = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER|MCP)>>(?!>)", re.I)
+TAG_FIX_ONE_RE = re.compile(r"<<<(MODE|PLAN|CODE|ANSWER|MCP)>(?!>)", re.I)
 
 def _extract_block(txt: str, name: str) -> str:
     m = re.search(rf"<<<{name}>>>([\s\S]*?)<<<END>>>", txt, re.I)
@@ -653,11 +756,20 @@ def _parse_onepass_output(raw: str) -> Dict[str, Any]:
         "plan":   _extract_block(raw, "PLAN").strip(),
         "code":   _extract_block(raw, "CODE"),
         "answer": _extract_block(raw, "ANSWER"),
+        "mcp":    _extract_block(raw, "MCP").strip(),
         "raw":    raw,
     }
     # 標準化 mode
-    if out["mode"] not in ("code", "explain"):
-        out["mode"] = "code" if out["code"] else ("explain" if out["answer"] else "")
+    allowed_modes = {"code", "explain", "fallback", "mcp_tools"}
+    if out["mode"] not in allowed_modes:
+        if out["code"]:
+            out["mode"] = "code"
+        elif out["answer"]:
+            out["mode"] = "explain"
+        elif out["mcp"]:
+            out["mode"] = "mcp_tools"
+        else:
+            out["mode"] = ""
 
     # mode=code 但無 code → 從 fenced code 補救
     if out["mode"] == "code" and not out["code"]:
@@ -687,7 +799,7 @@ def _parse_onepass_output(raw: str) -> Dict[str, Any]:
     if out.get("mode") != "code":
         m = re.search(r"\bcode\s*(\{)", raw, re.I)
         idx = m.start(1) if m else raw.find("{")
-        if idx != -1 and ("import " in raw or "requests.get" in raw or "pd.read" in raw):
+        if idx != -1 and ("import " in raw or "requests.get" in raw or "pd.read" in raw or "plt." in raw):
             try:
                 plan_obj, end_idx = json.JSONDecoder().raw_decode(raw[idx:])
                 code_text = raw[idx + end_idx :].strip()
@@ -757,6 +869,7 @@ class OnePassResult:
     plan: Optional[Dict[str, Any]] = None
     citations: List["Citation"] = None
     debug: Optional[Dict[str, Any]] = None  # <--- NEW
+    mcp: Optional[Dict[str, Any]] = None
 
 def _to_result(parsed: Dict[str, Any]) -> OnePassResult:
     """Convert a loose dict (from decide_and_generate) into OnePassResult."""
@@ -780,6 +893,23 @@ def _to_result(parsed: Dict[str, Any]) -> OnePassResult:
         res.plan = plan
     else:
         res.plan = None
+
+    mcp = parsed.get("mcp")
+    mcp_obj: Optional[Dict[str, Any]] = None
+    if isinstance(mcp, str):
+        stripped = mcp.strip()
+        if stripped:
+            try:
+                loaded = json.loads(stripped)
+                if isinstance(loaded, dict):
+                    mcp_obj = loaded
+                else:
+                    mcp_obj = {"_raw": stripped}
+            except Exception:
+                mcp_obj = {"_raw": stripped}
+    elif isinstance(mcp, dict):
+        mcp_obj = mcp
+    res.mcp = mcp_obj
 
     # 把 debug/raw 也掛上，供後續續寫或 debug 用
     setattr(res, "debug", parsed.get("debug"))
@@ -991,10 +1121,22 @@ def decide_and_generate(
     whitelist: Dict[str, Any],
     llm_id: str,
     prev_plan: Optional[Dict[str, Any]] = None,
+    followup_hint: bool = False,
     max_continue: bool = True,
     debug: bool = False,
+    today: str,
+    ghrsst_hint: bool = False,
 ) -> Dict[str, Any]:
-    prompt = build_main_prompt(query=query, notes=notes or "", whitelist=whitelist, top_k=6, prev_plan=prev_plan)
+    prompt = build_main_prompt(
+        query=query,
+        notes=notes or "",
+        whitelist=whitelist,
+        top_k=6,
+        prev_plan=prev_plan,
+        followup_hint=followup_hint,
+        today=today,
+        ghrsst_hint=ghrsst_hint,
+    )
 
     # 只在這裡印一次 prompt 尺寸（可選）
     if DEBUG_MODE or debug:
@@ -1006,7 +1148,18 @@ def decide_and_generate(
         {"role": "user",   "content": "Follow STRICT OUTPUT FORMAT and answer now."},
     ]
 
-    raw = LLM.chat(messages, temperature=0.2, max_tokens=1024) or ""
+    try:
+        raw = LLM.chat(messages, temperature=0.2, max_tokens=1024)
+    except Exception as exc:
+        logger.error("[onepass] LLM chat error: %s", exc)
+        if DEBUG_MODE or debug:
+            raise
+        return {
+            "mode": "explain",
+            "answer": "LLM 呼叫失敗或逾時，請稍後再試，並可執行 /llm status 確認狀態。",
+            "debug": {"error": str(exc), "mode": "explain"},
+        }
+    raw = raw or ""
     if DEBUG_MODE or debug:
         logger.info("[onepass] raw_len=%d head=%r", len(raw), raw[:64])
     if not raw.strip():
@@ -1024,11 +1177,19 @@ def decide_and_generate(
 
     def _invalid(p: Dict[str, Any]) -> bool:
         m = (p.get("mode") or "").strip().lower()
-        if not m:
+        allowed = {"code", "explain", "fallback", "mcp_tools"}
+        if not m or m not in allowed:
             return True
-        only_token = (raw.strip().lower() in {"code", "explain"})
-        no_blocks = not ((p.get("code") or "").strip() or (p.get("answer") or "").strip())
-        return only_token or (m in {"code","explain"} and no_blocks)
+        only_token = raw.strip().lower() in allowed
+        answer_empty = not (p.get("answer") or p.get("text") or "").strip()
+        code_empty = not (p.get("code") or "").strip()
+        if m == "code" and (code_empty or answer_empty and not p.get("plan")):
+            return True
+        if m in {"explain", "fallback"} and answer_empty:
+            return True
+        if m == "mcp_tools" and not (p.get("mcp") or "").strip():
+            return True
+        return only_token
 
     if _invalid(parsed):
         fix_user = (
@@ -1045,7 +1206,7 @@ def decide_and_generate(
             parsed = parsed2
 
     # 如果 explain 但沒有 answer，就塞 raw（避免空白）
-    if (parsed.get("mode") == "explain") and not (parsed.get("answer") or "").strip():
+    if (parsed.get("mode") in {"explain", "fallback"}) and not (parsed.get("answer") or "").strip():
         parsed["answer"] = (parsed.get("answer") or parsed.get("text") or parsed.get("raw") or "").strip()
 
     # 單次 continue（若 code 太短）
@@ -1116,10 +1277,18 @@ def validate_plan(plan: Dict[str, Any], whitelist: Dict[str, Any]) -> None:
             params[key] = f"{value}-01"
 
 
-def format_citations(hits: List[Hit]) -> List[Citation]:
+def format_citations(hits: List[Hit], answer_text: Optional[str] = None, limit: int = 2) -> List[Citation]:
+    if not hits or limit == 0:
+        return []
+    selected_hits = hits
+    if limit:
+        selected_hits = selected_hits[:limit]
+    if answer_text:
+        selected_hits = _select_citation_hits(hits, answer_text, limit or len(hits))
+
     citations: List[Citation] = []
     seen: set[tuple[str, str, int]] = set()
-    for hit in hits:
+    for hit in selected_hits:
         payload = hit.payload or {}
         title, url = get_title_url(payload)
         source = url or hit.source_file or payload.get("source_file", "")
@@ -1129,6 +1298,52 @@ def format_citations(hits: List[Hit]) -> List[Citation]:
         seen.add(key)
         citations.append(Citation(title=title, source=source, chunk_id=hit.chunk_id))
     return citations
+
+
+def _looks_like_followup(query: str, prev_plan: Optional[Dict[str, Any]]) -> bool:
+    if not prev_plan or not query:
+        return False
+    lowered = query.lower()
+    if any(keyword in lowered for keyword in FOLLOWUP_KEYWORDS):
+        return True
+    params = (prev_plan.get("params") or {}) if isinstance(prev_plan, dict) else {}
+    changes = sum(1 for key in params if key and str(key) in query)
+    has_plot_terms = any(term in lowered for term in ("plot", "map", "圖", "畫"))
+    return (changes >= 2) or (changes >= 1 and has_plot_terms)
+
+
+def _looks_like_ghrsst_request(query: str) -> bool:
+    if not query:
+        return False
+    lowered = query.lower()
+    has_kw = any(keyword in lowered for keyword in GHRSST_KEYWORDS)
+    if not has_kw:
+        return False
+    has_geo_token = any(token in lowered for token in GHRSST_GEO_TOKENS)
+    has_region = any(
+        region in lowered
+        for region in ("台灣", "外海", "花蓮", "基隆", "澎湖", "東海", "南海", "台東", "taiwan")
+    )
+    has_temporal = any(word in lowered for word in ("今天", "今日", "現在", "current", "today"))
+    coord_like = bool(COORD_PAIR_RE.search(query) or BBOX_RE.search(query))
+    digits = sum(ch.isdigit() for ch in query)
+    return coord_like or has_geo_token or has_region or (has_temporal and digits >= 2)
+
+
+def _looks_like_unclear_answer(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    phrases = (
+        "請再具體說明",
+        "請重新描述",
+        "無法理解",
+        "不太確定",
+        "i cannot understand",
+        "please clarify",
+        "not sure what you mean",
+    )
+    return any(p in lowered for p in phrases)
 
 def _looks_incomplete(code: str) -> bool:
     if not code: return True
@@ -1141,7 +1356,11 @@ def _looks_incomplete(code: str) -> bool:
 
 def _continue_llm_code(prev_raw: str, prev_code: str, query: str, whitelist: dict) -> str:
     prompt = build_continue_prompt(prev_raw=prev_raw, prev_code=prev_code, query=query, whitelist=whitelist)
-    raw2 = LLM.generate(prompt, temperature=0.2)
+    try:
+        raw2 = LLM.generate(prompt, temperature=0.2)
+    except Exception as exc:
+        logger.error("[onepass] continue code failed: %s", exc)
+        return prev_code
     code2 = _extract_block(raw2, "CODE") or _extract_first_fenced_code(raw2) or raw2.strip()
     return code2
 
@@ -1151,12 +1370,21 @@ def run_onepass(
     collections: Optional[List[str]] = None,
     temperature: float = 0.2,
     debug: bool = False,
+    today: Optional[str] = None,
 ) -> OnePassResult:
     global LAST_PLAN
     t0 = time.perf_counter()
     debug_enabled = DEBUG or DEBUG_MODE or debug
 
+    if not _query_is_meaningful(query):
+        msg = "問題內容過短或不清楚，請再描述一次。"
+        fallback = OnePassResult(mode="explain", text=msg, citations=[])
+        fallback.debug = {"error": "query_too_short"}
+        return fallback
+
     prev_plan = LAST_PLAN.copy() if isinstance(LAST_PLAN, dict) else None
+    followup_hint = _looks_like_followup(query, prev_plan)
+    ghrsst_hint = _looks_like_ghrsst_request(query)
 
     hits_raw = search_qdrant(query, k=max(k, 1) * 3, collections=collections)
 
@@ -1176,14 +1404,19 @@ def run_onepass(
         logger.info("[onepass] notes_len=%d preview:\n%s", nlen, nhead)
 
     llm_id = f"{LLM.provider}:{LLM.model}"
+    today_value = today or today_tpe()
+
     result = decide_and_generate(
         query=query,
         notes=notes,
         whitelist=whitelist,
         llm_id=llm_id,
         prev_plan=prev_plan,
+        followup_hint=followup_hint,
         max_continue=True,
         debug=debug_enabled,
+        today=today_value,
+        ghrsst_hint=ghrsst_hint,
     )
     if isinstance(result, dict):
         result = _to_result(result)
@@ -1198,7 +1431,7 @@ def run_onepass(
         raw_val = str(plan_candidate.get("_raw") or "").strip()
         if not raw_val:
             plan_candidate = None
-    if (plan_candidate is None) and prev_plan:
+    if plan_candidate is None and prev_plan and followup_hint and (result.mode or "").lower() == "code":
         result.plan = prev_plan.copy()
         inherited = True
     elif plan_candidate is None:
@@ -1274,10 +1507,52 @@ def run_onepass(
         if plot_rule == "map" and "meshgrid" not in code_lower and "pivot" not in code_lower:
             warnings.append("plot_rule='map' but code does not build a lon/lat grid via pivot/meshgrid.")
 
+    allow_code_request = _wants_code(query) or followup_hint
+    auto_reason = None
+    if (result.mode or "").lower() == "code":
+        # if not allow_code_request:
+            # auto_reason = "question did not request code"
+        if plan_ok is False or guard_ok is False:
+            auto_reason = "plan_or_guard_failed"
+    if auto_reason:
+        result.mode = "explain"
+        result.code = None
+        result.plan = None
+        if not (result.text and result.text.strip()):
+            result.text = "請再具體說明需求。"
+        warnings.append(f"Auto downgraded to explain: {auto_reason}")
+        dbg = result.debug or {}
+        dbg["auto_downgraded"] = auto_reason
+        result.debug = dbg
+        auto_downgraded = True
+    else:
+        auto_downgraded = False
+
+    fallback_mode = (result.mode or "").lower() == "fallback"
+    if not fallback_mode and _looks_like_unclear_answer(result.text or ""):
+        fallback_mode = True
+        result.mode = "fallback"
+    if fallback_mode:
+        result.plan = None
+        result.code = None
+        if not (result.text and result.text.strip()):
+            result.text = "無法辨識需求，請再描述一次。"
+
     t4 = time.perf_counter()
 
-    # citations (keep your existing implementation)
-    result.citations = format_citations(hits)
+    parsed_mode = (result.mode or "").strip().lower()
+    answer_text = (result.text or "").strip()
+    debug_obj = getattr(result, "debug", None) or {}
+    suppress_citations = (
+        bool(debug_obj.get("error"))
+        or auto_downgraded
+        or fallback_mode
+        or parsed_mode == "mcp_tools"
+    )
+    if suppress_citations:
+        result.citations = []
+    else:
+        result.citations = format_citations(hits, answer_text=answer_text, limit=2)
 
     # Build debug payload
     if debug_enabled:
@@ -1289,7 +1564,6 @@ def run_onepass(
             "sample_paths": (wl.get("paths") or [])[:5],
             "sample_params": (wl.get("params") or [])[:8],
         }
-        parsed_mode = (getattr(result, "mode", "") or "").strip().lower()
         code_len = len(result.code or "")
         debug_obj = result.debug or {}
         debug_obj.update(

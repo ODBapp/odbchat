@@ -3,6 +3,7 @@ from __future__ import annotations
 import os, json, logging, requests
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
+import time
 
 logger = logging.getLogger("odbchat.llm")
 DEBUG = os.getenv("ONEPASS_DEBUG", "").lower() in {"1","true","yes"}
@@ -21,7 +22,7 @@ class LLMAdapter:
     def __init__(self):
         self.provider = (os.getenv("ODB_LLM_PROVIDER") or "ollama").strip()
         self.model    = (os.getenv("ODB_LLM_MODEL") or "gemma3:4b").strip()
-        self.timeout  = float(os.getenv("LLM_TIMEOUT", "300"))
+        self.timeout  = float(os.getenv("LLM_TIMEOUT", "120"))
         self.temp     = float(os.getenv("LLM_TEMP", "0.7"))
         self.top_p    = float(os.getenv("LLM_TOP_P", "0.9"))
         self.top_k    = int(os.getenv("LLM_TOP_K", "40"))
@@ -48,86 +49,126 @@ class LLMAdapter:
                 continue
             stops.append(cleaned)
         self.stops = stops
+        self.last_error: Optional[str] = None
+        self.last_success: Optional[float] = None
 
-        def _ollama_base(self) -> str:
-            url = self.ollama_chat or "http://localhost:11434/api/chat"
-            # 取到 /api 之前的 base
-            return url.split("/api/")[0] if "/api/" in url else url.rstrip("/")
+    def _ollama_base(self) -> str:
+        url = self.ollama_chat or "http://localhost:11434/api/chat"
+        return url.split("/api/")[0] if "/api/" in url else url.rstrip("/")
 
-        def _llama_base(self) -> str:
-            url = self.llama_chat or "http://localhost:8201/v1/chat/completions"
-            # 取到 /v1 之前的 base
-            return url.split("/v1/")[0] if "/v1/" in url else url.rstrip("/")
+    def _llama_base(self) -> str:
+        url = self.llama_chat or "http://localhost:8201/v1/chat/completions"
+        return url.split("/v1/")[0] if "/v1/" in url else url.rstrip("/")
 
-        def list_models(self) -> list[str]:
-            """
-            列出目前 provider 可用的模型清單：
-            - Ollama: GET <base>/api/tags
-            - llama.cpp: GET <base>/v1/models（OpenAI 相容）
-            失敗時回退為 [self.model]
-            """
-            if self.provider == "ollama":
-                try:
-                    base = self._ollama_base()
-                    r = requests.get(f"{base}/api/tags", timeout=self.timeout)
-                    r.raise_for_status()
-                    data = r.json() or {}
-                    models = data.get("models") or []
-                    names: list[str] = []
-                    for m in models:
-                        name = m.get("name") or m.get("model") or m.get("tag")
-                        if name:
-                            names.append(str(name))
-                    if not names:
-                        names = [self.model]
-                    if DEBUG:
-                        logger.info("[llm] ollama models: %s", names)
-                    return names
-                except Exception as e:
-                    logger.exception("[llm] ollama list_models failed: %s", e)
-                    return [self.model]
-
-            if self.provider == "llama-cpp":
-                try:
-                    base = self._llama_base()
-                    r = requests.get(f"{base}/v1/models", timeout=self.timeout)
-                    if r.status_code == 200:
-                        data = r.json() or {}
-                        arr = data.get("data") or []
-                        names: list[str] = []
-                        for it in arr:
-                            mid = it.get("id") or it.get("model")
-                            if mid:
-                                names.append(str(mid))
-                        if names:
-                            if DEBUG:
-                                logger.info("[llm] llama-cpp models: %s", names)
-                            return names
-                except Exception as e:
-                    logger.exception("[llm] llama-cpp list_models failed: %s", e)
+    def list_models(self) -> list[str]:
+        """
+        列出目前 provider 可用的模型清單：
+        - Ollama: GET <base>/api/tags
+        - llama.cpp: GET <base>/v1/models（OpenAI 相容）
+        失敗時回退為 [self.model]
+        """
+        if self.provider == "ollama":
+            try:
+                base = self._ollama_base()
+                r = requests.get(f"{base}/api/tags", timeout=self.timeout)
+                r.raise_for_status()
+                data = r.json() or {}
+                models = data.get("models") or []
+                names: list[str] = []
+                for m in models:
+                    name = m.get("name") or m.get("model") or m.get("tag")
+                    if name:
+                        names.append(str(name))
+                if not names:
+                    names = [self.model]
+                if DEBUG:
+                    logger.info("[llm] ollama models: %s", names)
+                self._mark_success()
+                return names
+            except Exception as e:
+                logger.exception("[llm] ollama list_models failed: %s", e)
+                self.last_error = f"list_models: {type(e).__name__}: {e}"
                 return [self.model]
 
-            # 其他 provider：先回目前使用的
+        if self.provider == "llama-cpp":
+            try:
+                base = self._llama_base()
+                r = requests.get(f"{base}/v1/models", timeout=self.timeout)
+                if r.status_code == 200:
+                    data = r.json() or {}
+                    arr = data.get("data") or []
+                    names: list[str] = []
+                    for it in arr:
+                        mid = it.get("id") or it.get("model")
+                        if mid:
+                            names.append(str(mid))
+                    if names:
+                        if DEBUG:
+                            logger.info("[llm] llama-cpp models: %s", names)
+                        self._mark_success()
+                        return names
+            except Exception as e:
+                logger.exception("[llm] llama-cpp list_models failed: %s", e)
+                self.last_error = f"list_models: {type(e).__name__}: {e}"
             return [self.model]
 
-        def set_model(self, model: str) -> bool:
-            if not model:
-                return False
-            self.model = str(model).strip()
-            os.environ["ODB_LLM_MODEL"] = self.model  # 讓之後的讀取一致
-            if DEBUG:
-                logger.info("[llm] set model -> %s:%s", self.provider, self.model)
-            return True
+        return [self.model]
 
-        def set_provider(self, provider: str) -> bool:
-            p = (provider or "").strip()
-            if not p:
-                return False
-            self.provider = p
-            os.environ["ODB_LLM_PROVIDER"] = self.provider
-            if DEBUG:
-                logger.info("[llm] set provider -> %s", self.provider)
-            return True
+    def set_model(self, model: str) -> bool:
+        if not model:
+            return False
+        self.model = str(model).strip()
+        os.environ["ODB_LLM_MODEL"] = self.model
+        if DEBUG:
+            logger.info("[llm] set model -> %s:%s", self.provider, self.model)
+        return True
+
+    def set_provider(self, provider: str) -> bool:
+        p = (provider or "").strip()
+        if not p:
+            return False
+        self.provider = p
+        os.environ["ODB_LLM_PROVIDER"] = self.provider
+        if DEBUG:
+            logger.info("[llm] set provider -> %s", self.provider)
+        return True
+
+    def _mark_success(self) -> None:
+        self.last_error = None
+        self.last_success = time.time()
+
+    def _mark_failure(self, exc: Exception) -> None:
+        self.last_error = f"{type(exc).__name__}: {exc}"
+
+    def _ping_backend(self) -> tuple[bool, Optional[str]]:
+        try:
+            timeout = min(self.timeout, 5.0)
+            if self.provider == "ollama":
+                base = self._ollama_base()
+                resp = requests.get(f"{base}/api/version", timeout=timeout)
+                resp.raise_for_status()
+            elif self.provider == "llama-cpp":
+                base = self._llama_base()
+                resp = requests.get(f"{base}/v1/models", timeout=timeout)
+                resp.raise_for_status()
+            else:
+                return True, None
+            return True, None
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    def get_status(self) -> dict:
+        reachable, ping_error = self._ping_backend()
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "timeout": self.timeout,
+            "reachable": reachable,
+            "healthy": reachable and not self.last_error,
+            "last_error": self.last_error,
+            "last_success": self.last_success,
+            "ping_error": ping_error,
+        }
         
     # -------- public APIs --------
     def chat(self, messages: List[Dict[str, str]], temperature: Optional[float] = None,
@@ -140,20 +181,42 @@ class LLMAdapter:
                         self.provider, self.model, temperature, max_tokens, self.stops)
 
         if self.provider == "ollama":
-            txt = self._chat_ollama(messages, temperature, max_tokens)
-            if txt.strip():
-                return txt.strip()
-            # fallback to generate
-            txt = self._gen_ollama(messages, temperature, max_tokens)
-            return txt.strip()
+            errors: list[Exception] = []
+            try:
+                txt = self._chat_ollama(messages, temperature, max_tokens)
+                if txt.strip():
+                    return txt.strip()
+            except Exception as exc:
+                errors.append(exc)
+            try:
+                txt = self._gen_ollama(messages, temperature, max_tokens)
+                if txt.strip():
+                    return txt.strip()
+            except Exception as exc:
+                errors.append(exc)
+            msg = "Ollama request failed"
+            if errors:
+                msg = f"{msg}: {errors[-1]}"
+            raise RuntimeError(msg)
 
         if self.provider == "llama-cpp":
-            txt = self._chat_llamacpp(messages, temperature, max_tokens)
-            if txt.strip():
-                return txt.strip()
-            # fallback to /completion
-            txt = self._comp_llamacpp(messages, temperature, max_tokens)
-            return txt.strip()
+            errors: list[Exception] = []
+            try:
+                txt = self._chat_llamacpp(messages, temperature, max_tokens)
+                if txt.strip():
+                    return txt.strip()
+            except Exception as exc:
+                errors.append(exc)
+            try:
+                txt = self._comp_llamacpp(messages, temperature, max_tokens)
+                if txt.strip():
+                    return txt.strip()
+            except Exception as exc:
+                errors.append(exc)
+            msg = "llama.cpp request failed"
+            if errors:
+                msg = f"{msg}: {errors[-1]}"
+            raise RuntimeError(msg)
 
         # 其他 provider 可在此擴充
         logger.error("Unknown LLM provider: %s", self.provider)
@@ -169,7 +232,6 @@ class LLMAdapter:
             return self._gen_ollama([{"role":"user","content": prompt}], temperature, max_tokens).strip()
 
         if self.provider == "llama-cpp":
-            # 直接打 /completion 較穩
             try:
                 payload = {
                     "prompt": prompt,
@@ -185,101 +247,104 @@ class LLMAdapter:
                 r = requests.post(self.llama_comp, json=payload, timeout=self.timeout)
                 r.raise_for_status()
                 data = r.json()
-                txt = (data.get("content")
-                       or data.get("choices",[{}])[0].get("text","")
-                       or "")
+                txt = (data.get("content") or data.get("choices",[{}])[0].get("text","") or "")
                 if DEBUG:
                     logger.info("[llm] llama.cpp /completion ok, len=%d head=%r", len(txt), txt[:120])
+                if not txt:
+                    raise RuntimeError("llama.cpp completion returned empty response")
+                self._mark_success()
                 return txt
             except Exception as e:
+                self._mark_failure(e)
                 logger.exception("[llm] llama.cpp /completion failed: %s", e)
-                return ""
+                raise
 
         logger.error("Unknown LLM provider for generate(): %s", self.provider)
         return ""
 
     # -------- providers (private) --------
     def _chat_ollama(self, messages, temperature, max_tokens) -> str:
-        try:
-            payload = {
-                "model": self.model,
-                "messages": [{"role": m.get("role","user"), "content": m.get("content","")} for m in messages],
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "top_p": self.top_p,
-                    "top_k": self.top_k,
-                    "min_p": self.min_p,
-                    "repeat_penalty": self.repeat_p,
-                    "num_ctx": self.num_ctx,
-                    "num_predict": max_tokens,
-                }
-            }
-            if self.stops:
-                payload["options"]["stop"] = self.stops
-
-            r = requests.post(self.ollama_chat, json=payload, timeout=self.timeout)
-            r.raise_for_status()
-            data = r.json()
-            # 新版
-            txt = (data.get("message",{}).get("content") or
-                   data.get("response") or "")
-            if DEBUG:
-                logger.info("[llm] ollama /api/chat len=%d head=%r", len(txt), txt[:120])
-            if txt:
-                return txt
-        except Exception as e:
-            logger.exception("[llm] ollama /api/chat failed: %s", e)
-
-        return ""
-
-    def _gen_ollama(self, messages, temperature, max_tokens) -> str:
-        try:
-            flat = self._flatten_messages(messages)
-            payload = {
-                "model": self.model,
-                "prompt": flat,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "top_p": self.top_p,
-                    "top_k": self.top_k,
-                    "min_p": self.min_p,
-                    "repeat_penalty": self.repeat_p,
-                    "num_ctx": self.num_ctx,
-                    "num_predict": max_tokens,
-                }
-            }
-            if self.stops:
-                payload["options"]["stop"] = self.stops
-            r = requests.post(self.ollama_gen, json=payload, timeout=self.timeout)
-            r.raise_for_status()
-            data = r.json()
-            txt = (data.get("response")
-                   or data.get("message",{}).get("content","")
-                   or "")
-            if DEBUG:
-                logger.info("[llm] ollama /api/generate len=%d head=%r", len(txt), txt[:120])
-            return txt
-        except Exception as e:
-            logger.exception("[llm] ollama /api/generate failed: %s", e)
-            return ""
-
-    def _chat_llamacpp(self, messages, temperature, max_tokens) -> str:
-        try:
-            payload = {
-                "model": os.getenv("LLAMA_MODEL", "local"),  # 某些建置必填但忽略
-                "messages": [{"role": m.get("role","user"), "content": m.get("content","")} for m in messages],
+        payload = {
+            "model": self.model,
+            "messages": [{"role": m.get("role","user"), "content": m.get("content","")} for m in messages],
+            "stream": False,
+            "options": {
                 "temperature": temperature,
                 "top_p": self.top_p,
                 "top_k": self.top_k,
                 "min_p": self.min_p,
                 "repeat_penalty": self.repeat_p,
-                "max_tokens": max_tokens,
+                "num_ctx": self.num_ctx,
+                "num_predict": max_tokens,
             }
-            if self.stops:
-                payload["stop"] = self.stops
+        }
+        if self.stops:
+            payload["options"]["stop"] = self.stops
 
+        try:
+            r = requests.post(self.ollama_chat, json=payload, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+            txt = (data.get("message",{}).get("content") or data.get("response") or "")
+            if DEBUG:
+                logger.info("[llm] ollama /api/chat len=%d head=%r", len(txt), txt[:120])
+            if not txt:
+                raise RuntimeError("Ollama chat returned empty response")
+            self._mark_success()
+            return txt
+        except Exception as e:
+            self._mark_failure(e)
+            logger.exception("[llm] ollama /api/chat failed: %s", e)
+            raise
+
+    def _gen_ollama(self, messages, temperature, max_tokens) -> str:
+        flat = self._flatten_messages(messages)
+        payload = {
+            "model": self.model,
+            "prompt": flat,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "top_p": self.top_p,
+                "top_k": self.top_k,
+                "min_p": self.min_p,
+                "repeat_penalty": self.repeat_p,
+                "num_ctx": self.num_ctx,
+                "num_predict": max_tokens,
+            }
+        }
+        if self.stops:
+            payload["options"]["stop"] = self.stops
+        try:
+            r = requests.post(self.ollama_gen, json=payload, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+            txt = (data.get("response") or data.get("message",{}).get("content","") or "")
+            if DEBUG:
+                logger.info("[llm] ollama /api/generate len=%d head=%r", len(txt), txt[:120])
+            if not txt:
+                raise RuntimeError("Ollama generate returned empty response")
+            self._mark_success()
+            return txt
+        except Exception as e:
+            self._mark_failure(e)
+            logger.exception("[llm] ollama /api/generate failed: %s", e)
+            raise
+
+    def _chat_llamacpp(self, messages, temperature, max_tokens) -> str:
+        payload = {
+            "model": os.getenv("LLAMA_MODEL", "local"),
+            "messages": [{"role": m.get("role","user"), "content": m.get("content","")} for m in messages],
+            "temperature": temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "repeat_penalty": self.repeat_p,
+            "max_tokens": max_tokens,
+        }
+        if self.stops:
+            payload["stop"] = self.stops
+        try:
             r = requests.post(self.llama_chat, json=payload, timeout=self.timeout)
             r.raise_for_status()
             data = r.json()
@@ -288,37 +353,43 @@ class LLMAdapter:
                    or "")
             if DEBUG:
                 logger.info("[llm] llama.cpp /v1/chat/completions len=%d head=%r", len(txt), txt[:120])
+            if not txt:
+                raise RuntimeError("llama.cpp chat returned empty response")
+            self._mark_success()
             return txt
         except Exception as e:
+            self._mark_failure(e)
             logger.exception("[llm] llama.cpp /v1/chat/completions failed: %s", e)
-            return ""
+            raise
 
     def _comp_llamacpp(self, messages, temperature, max_tokens) -> str:
+        flat = self._flatten_messages(messages)
+        payload = {
+            "prompt": flat,
+            "n_predict": max_tokens,
+            "temperature": temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "repeat_penalty": self.repeat_p,
+        }
+        if self.stops:
+            payload["stop"] = self.stops
         try:
-            flat = self._flatten_messages(messages)
-            payload = {
-                "prompt": flat,
-                "n_predict": max_tokens,
-                "temperature": temperature,
-                "top_p": self.top_p,
-                "top_k": self.top_k,
-                "min_p": self.min_p,
-                "repeat_penalty": self.repeat_p,
-            }
-            if self.stops:
-                payload["stop"] = self.stops
             r = requests.post(self.llama_comp, json=payload, timeout=self.timeout)
             r.raise_for_status()
             data = r.json()
-            txt = (data.get("content")
-                   or data.get("choices",[{}])[0].get("text","")
-                   or "")
+            txt = (data.get("content") or data.get("choices",[{}])[0].get("text","") or "")
             if DEBUG:
                 logger.info("[llm] llama.cpp /completion len=%d head=%r", len(txt), txt[:120])
+            if not txt:
+                raise RuntimeError("llama.cpp completion returned empty response")
+            self._mark_success()
             return txt
         except Exception as e:
+            self._mark_failure(e)
             logger.exception("[llm] llama.cpp /completion failed: %s", e)
-            return ""
+            raise
 
     # -------- helpers --------
     def _flatten_messages(self, messages: List[Dict[str,str]]) -> str:

@@ -51,3 +51,12 @@
     - Updated CLI chat flow to use the router and render SST results directly.
     - Added router unit tests plus CLI coverage for the new MCP branch.
     - Improved GHRSST tool handling with optional `method="nearest"` fallback and user-facing error messages when data is unavailable.
+    - Split Marine Heatwave severity guidance into dedicated fact sheets (`mhw-severity-en/zh`) and re-ingested RAG data for more precise retrieval.
+    - CLI line editor now uses GNU readline (with IME-friendly input) and stores full history so Up/Down recall works for every command; fallback renderer hides citations for explicit refusals.
+    - Hardened llama.cpp timeout handling (LLM calls now fail fast with health diagnostics), added `/llm status` and `/llm reconnect` CLI commands plus the `config.llm_status` MCP tool for backend checks.
+    - Improved citation selection to only cite the documents actually used in answers (max 2); meaningless queries now get a clarification prompt instead of random code, and the classifier prompt was tightened to prefer explain-mode when intent is unclear.
+    - Added fallbacks for pasted code/small-talk, suppressed citations for those replies, and only reuse previous plans when the new query explicitly signals a follow-up (e.g., “改畫…”). Follow-up code fixes now continue to return updated scripts instead of falling back to explain mode.
+    - Enhanced the classifier prompt and added follow-up hints so “改…” style questions inherit and update prior plans reliably; fallback answers are now citation-free even when the model asks for clarification.
+#### v0.3.5 Unify GHRSST routing with one-pass prompt
+    - One-pass prompt now emits a `mcp_tools` mode with a structured <<<MCP>>> block; the router consumes it directly and falls back to parsed lon/lat or bbox hints when the LLM hesitates.
+    - CLI REPL supports multi-line pastes (collects all buffered lines before submitting) so large snippets can be pasted and sent as one message.

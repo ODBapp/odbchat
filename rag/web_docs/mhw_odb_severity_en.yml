@@ -1,0 +1,43 @@
+---
+dataset: marineheatwave
+collection: mhw
+doc_type: fact_sheet
+title: Marine Heatwave Severity Levels (ODB)
+lang: en
+issuer: "Ocean Data Bank (ODB), Taiwan"
+canonical_url: "https://eco.odb.ntu.edu.tw/pub/MHW/?lang=en"
+license: "Unknown"
+retrieved_at: "2025-08-25T10:00:00Z"
+doc_id: "mhw-severity-en"
+tags:
+  - Marine Heatwaves
+  - MHW severity levels
+  - Hobday 2018
+  - classification
+purpose: "Quick reference for the Hobday et al. (2018) severity levels adopted by ODB Marine Heatwaves."
+faq:
+  - "How does ODB define moderate vs. strong marine heatwaves?"
+  - "What do the MHW level numbers mean?"
+content: |
+  # Marine Heatwave Severity Levels (ODB)
+
+  ODB follows the categorisation defined by [Hobday et al., 2018](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves) when labelling marine heatwave (MHW) events.  The categories compare the observed monthly sea-surface-temperature (SST) anomaly with the local climatological threshold (the 90th percentile seasonal background).
+
+  | Level | Name      | Temperature departure* |
+  | ----- | --------- | ---------------------- |
+  | 0     | None      | SST anomaly below the threshold |
+  | 1     | Moderate  | Threshold ≤ anomaly < threshold + 1 × excess |
+  | 2     | Strong    | Threshold + 1 × excess ≤ anomaly < threshold + 2 × excess |
+  | 3     | Severe    | Threshold + 2 × excess ≤ anomaly < threshold + 3 × excess |
+  | 4     | Extreme   | Anomaly ≥ threshold + 3 × excess |
+
+  *“Excess” refers to the difference between the threshold and the long-term mean SST at that location and month.  Each successive category represents another multiple of that excess above the threshold.
+
+  Key points:
+
+  - **Moderate (Level 1):** anomaly just above the threshold—the earliest indication of an MHW.
+  - **Strong (Level 2):** anomaly at least one extra excess above the threshold.
+  - **Severe (Level 3):** anomaly between two and three excess increments above the threshold.
+  - **Extreme (Level 4):** anomaly at least three excess increments above the threshold.
+
+  These categories are stored in ODB open datasets and are used in downstream tools such as the Hidy Viewer, CSV downloads, and API responses.  Values are reported as integers 0–4 in the `level` field, alongside the underlying SST anomaly in °C.

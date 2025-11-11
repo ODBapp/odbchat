@@ -83,3 +83,45 @@ async def test_cli_chat_mcp(monkeypatch, capsys):
     captured = capsys.readouterr().out
     assert "SST" in captured
     assert "2025-01-10" in output
+
+
+@pytest.mark.asyncio
+async def test_cli_chat_refusal_no_citations(monkeypatch, capsys):
+    monkeypatch.setattr("cli.odbchat_cli.OllamaAsyncClient", None, raising=False)
+    responses = {
+        "router.answer": {
+            "mode": "explain",
+            "text": "抱歉，我無法提供該資訊。",
+            "citations": [
+                {"title": "Marine Heatwaves", "source": "https://example", "chunk_id": 1}
+            ],
+        }
+    }
+    client = ODBChatClient()
+    client.client = DummyMCPClient(responses)
+    await client.chat("問題")
+    captured = capsys.readouterr().out
+    assert "抱歉" in captured
+    assert "Citations" not in captured
+
+
+@pytest.mark.asyncio
+async def test_cli_llm_status(monkeypatch, capsys):
+    monkeypatch.setattr("cli.odbchat_cli.OllamaAsyncClient", None, raising=False)
+    responses = {
+        "config.llm_status": {
+            "provider": "llama-cpp",
+            "model": "gemma3:12b",
+            "timeout": 60,
+            "reachable": True,
+            "healthy": False,
+            "last_error": "ReadTimeout",
+            "available": ["gemma3:12b"],
+        }
+    }
+    client = ODBChatClient()
+    client.client = DummyMCPClient(responses)
+    await client._cmd_llm(["status"])
+    captured = capsys.readouterr().out
+    assert "llm backend status" in captured.lower()
+    assert "gemma3:12b" in captured

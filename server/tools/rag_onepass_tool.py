@@ -91,7 +91,7 @@ def _norm_plan(plan: Any) -> dict | None:
 
 def _norm_mode(mode: Any, code: Any, text: Any) -> str:
     m = (mode or "").strip().lower()
-    if m in {"code", "explain"}:
+    if m in {"code", "explain", "fallback", "mcp_tools"}:
         return m
     code_has = bool(code and str(code).strip())
     return "code" if code_has else "explain"
@@ -134,6 +134,7 @@ def register_rag_onepass_tool(mcp: FastMCP) -> None:
         res_plan = getattr(result, "plan", None)
         res_citations = getattr(result, "citations", None) or []
         res_debug = getattr(result, "debug", None)
+        res_mcp = getattr(result, "mcp", None)
 
         payload_out: dict[str, Any] = {
             "mode": _norm_mode(res_mode, res_code, res_text),
@@ -146,6 +147,8 @@ def register_rag_onepass_tool(mcp: FastMCP) -> None:
         plan_obj = _norm_plan(res_plan)
         if plan_obj:
             payload_out["plan"] = plan_obj
+        if payload_out["mode"] == "mcp_tools" and isinstance(res_mcp, dict):
+            payload_out["mcp"] = res_mcp
 
         debug_enabled = debug_flag or DEBUG_ENV
         if debug_enabled and isinstance(res_debug, dict):

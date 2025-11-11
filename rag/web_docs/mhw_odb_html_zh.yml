@@ -9,7 +9,7 @@ canonical_url: "https://eco.odb.ntu.edu.tw/pub/MHW/"
 license: "Unknown"
 retrieved_at: "2025-08-25T10:00:00Z"
 doc_id: "e92105f573812706c700e35c0d1eee44e62ee8cc"
-tags: ["Marine Heatwaves", ODB, "Open Data", 開放資料, 海洋熱浪資料庫, 方法, 介紹, "海表溫度距平值"]
+tags: ["Marine Heatwaves", ODB, "Open Data", 開放資料, 海洋熱浪資料庫, 方法, 介紹, "海洋熱浪等級"]
 related_to:
   - doc_id: ["ddba171bda668c60390ee6fab602b037efb73539", "d971ef8bbc81997eae74ee0e555588a6526b0ea1", "4aa0def856dfdebb205135c3a9d5a76a55110e38"]
   - collection: "mhw"
@@ -19,7 +19,7 @@ source_file: "web_docs/md/mhw_odb_html_zh.md"
 source_type: web
 version: v1
 purpose: "提供ODB全球海洋熱浪資料庫如何計算海洋熱浪事件與海洋熱浪的綜合介紹、資料呈現、開放資料下載、開放API(OpenAPI)使用與在ODB Hidy Viewer上使用的方法"
-faq: ["如何下載海洋熱浪資料", "Visualize SST anomalies or marine heatwaves", "如何使用圖形化界面找到與呈現海洋資料"]
+faq: ["如何下載海洋熱浪資料", "海洋熱浪如何分級", "如何使用圖形化界面找到與呈現海洋資料"]
 content: |
   # Usage Note
   '''
@@ -36,17 +36,12 @@ content: |
   ## About
   
   全球暖化造成的氣候危機導致地球持續升溫，陸地上的異常高溫熱浪帶來致命的威脅，而海洋也面臨相同狀況。在同一地點， 若海水溫度相對與過去平均海洋溫度出現一段時間的異常高溫，這種現象被稱為海洋熱浪 (marine heatwaves, MHW) ([Pearce et al., 2011](https://fish.gov.au/Archived-Reports/Documents/Pearce_et_al_2011.pdf); [Hobday et al., 2016](https://www.sciencedirect.com/science/article/pii/S0079661116000057))。 海洋熱浪的範圍可以延伸至數千平方公里，持續數周甚至數月 ([Di Lorenzo and Mantua, 2016](https://www.nature.com/articles/nclimate3082))，而這種長時間異常高溫的環境對於海洋生物、海洋生態系統和漁業資源都造成極大的影響。 為了提升民眾對海洋熱浪的認識， ODB 使用 [NOAA OISST](https://www.ncei.noaa.gov/products/optimum-interpolation-sst)（Optimum Interpolation Sea Surface Temperature，海洋表面溫度）0.25° x 0.25° 的資料 ([Huang et al. 2021](https://journals.ametsoc.org/view/journals/clim/34/8/JCLI-D-20-0166.1.xml))， 並依 [Jacox et al. (2020)](https://www.nature.com/articles/s41586-020-2534-z) 的方法，計算了全球 1982 年至今約 40 年間每個月的海洋熱浪事件（詳見 Method）， 同時，我們依據 [Hobday et al. (2018)](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves) 的分級標準，將海洋熱浪分級， 建立了一個全球海洋熱浪資料庫。此資料庫內容包含：每月的海表平均溫度、海表溫度距平值、海洋熱浪級數與海洋熱浪引起的熱位移\*， 該資料將每月進行更新，並開放資料下載。此外，除了提供數據下載外，我們也開放地理圖資介接服務 ([WMS](https://ecodata.odb.ntu.edu.tw/geoserver/marineheatwave/wms?service=WMS&request=GetCapabilities)/[WMTS](https://ecodata.odb.ntu.edu.tw/geoserver/gwc/service/wmts/?service=WMTS&request=getCapabilities)，若使用 QGIS 介接， 可參考[此網頁](https://oceandatabank.github.io/MHW_QGIS/))， 海洋熱浪數據也已整合至 [Hidy Viewer 2](https://odbview.oc.ntu.edu.tw/hidy/?odbMHW&map=z:2;c:[19.2453,121];datetime:2025-01-01T08:20:00.000Z)， 使用者可透過該平台查詢與視覺化全球海洋熱浪的時空分布，並透過互動式地圖進一步了解特定區域的熱浪強度（詳見 Hidy）。  
-    
   根據 [2022 年的《政府間氣候變化專門委員會》(IPCC) 報告](https://doi.org/10.1017/9781009325844)，未來全球海洋熱浪事件不僅頻率將增加，強度與持續時間也將上升。 面對愈來愈頻繁發生的海洋熱浪 ([Frölicher et al. 2018](https://www.nature.com/articles/s41586-018-0383-9); [Oliver et al., 2018](https://www.nature.com/articles/s41467-018-03732-9)) ， ODB 希望透過建立海洋熱浪資料庫提升使用者對海洋熱浪的認知與意識，進一步協助學界研究海洋熱浪時空分布和變化趨勢以及對海洋生物的可能影響，同時也為預測和應對海洋熱浪提供科學數據參考。  
-    
-  \* Thermal Displacement: 熱位移就是在海洋熱浪的影響下，為了追隨長期平均海表溫度所需移動的最小距離 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))。 熱位移在本篇文獻中特指海洋熱浪對周圍海洋生態系統的影響範圍，特別是對海洋生物遷移、分布範圍和生態系統功能的影響。
-  
+  Thermal Displacement: 熱位移就是在海洋熱浪的影響下，為了追隨長期平均海表溫度所需移動的最小距離 ([Jacox et al., 2020](https://www.nature.com/articles/s41586-020-2534-z))。 熱位移在本篇文獻中特指海洋熱浪對周圍海洋生態系統的影響範圍，特別是對海洋生物遷移、分布範圍和生態系統功能的影響。
+  海洋熱浪等級：
   ![海洋熱浪分級標準](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hobday_2018_2.jpg)  
-  
-  海洋熱浪分級標準，依據 [Hobday et al., 2018](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves) 分級方法，每月 SST 距平值超過門檻值 2 倍以下、2 倍至 3 倍之間、3 倍至 4 倍之間、4倍以上， 其分級為中等 (Moderate)、強烈 (Strong)、嚴重 (Severe)、極端 (Extreme)，共四個級別。圖修改自 [Hobday et al. (2018)。](https://tos.org/oceanography/article/categorizing-and-naming-marine-heatwaves)
-  
+  詳細的「中等／強烈／嚴重／極端」門檻值依 Hobday et al. (2018) 定義，請參考「海洋熱浪強度等級（ODB 標準）」快速參考表取得完整數值說明。
   ![海洋熱浪分級時間序列](https://eco.odb.ntu.edu.tw/pub/MHW/assets/time_series_example.jpg)  
-  
   於臺灣近海東經 122.625 度、北緯 25.375 度，2020 一月至今的海洋熱浪分級時間序列。
   
   ## Method
@@ -81,11 +76,8 @@ content: |
   ### Results
   
   ![2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly) 海洋熱浪分級](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_level.jpg)  
-  
   2025/07 Marine Heatwave levels (Monthly 25km SST Anomaly) 海洋熱浪分級
-  
   ![2025/07 Thermal Displacement caused by Marine Heatwaves 海洋熱浪引發的熱位移](https://eco.odb.ntu.edu.tw/pub/MHW/assets/202507_td.jpg)
-  
   2025/07 Thermal Displacement caused by Marine Heatwaves 海洋熱浪引發的熱位移
   
   ## Download
@@ -128,13 +120,9 @@ content: |
   #輸出範例
   
   lon,lat,date,level,sst,sst\_anomaly,td
-  
   120.875,25.375,2023-04-01,0,22.426334,0.6179904937744141,
-  
   120.875,25.375,2023-05-01,0,25.035807,0.5337085723876953,
-  
   120.875,25.375,2023-06-01,1,27.591667,1.1035003662109375,141.22131
-  
   120.875,25.375,2023-07-01,1,28.8, 1.2374820709228516,57.366695
   
   ![hidy](https://eco.odb.ntu.edu.tw/pub/MHW/assets/hidy_mhw.svg)

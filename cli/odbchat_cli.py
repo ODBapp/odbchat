@@ -36,6 +36,10 @@ import argparse
 import select
 import codecs
 from fastmcp import Client
+try:  # Optional; improves line editing on POSIX systems
+    import readline  # type: ignore
+except Exception:  # pragma: no cover
+    readline = None  # type: ignore
 
 try:
     from ollama import AsyncClient as OllamaAsyncClient  # for streaming
@@ -58,6 +62,7 @@ class ODBChatClient:
         self._cmd_history: list[str] = []
         self._commands = {}  # name -> async handler
         self._help = {}      # name -> help string
+        self._help["/llm"] = "/llm status | /llm reconnect"
         self.server_provider = "unknown"
         self.server_model = default_model
 
@@ -320,19 +325,25 @@ class ODBChatClient:
         while True:
             try:
                 prompt_label = self._model_prompt_label()
-                user_input = self._readline_with_cmd_history(
-                    f"\n🧑 You ({prompt_label} @ {self.temperature}): "
-                ).strip()
+                user_input = self._read_user_message(prompt_label).strip()
                 if not user_input:
                     continue
                 if user_input.lower() in {"/quit", "/exit", "q", "quit", "exit"}:
                     print("\n👋 Goodbye!")
                     break
 
+                if not self._cmd_history or self._cmd_history[-1] != user_input:
+                    self._cmd_history.append(user_input)
+                if readline is not None:
+                    try:
+                        hist_len = readline.get_current_history_length()
+                        last = readline.get_history_item(hist_len)
+                        if last != user_input:
+                            readline.add_history(user_input)
+                    except Exception:
+                        pass
+
                 if user_input.startswith('/'):
-                    # Keep session command history for slash-commands
-                    if not self._cmd_history or self._cmd_history[-1] != user_input:
-                        self._cmd_history.append(user_input)
                     await self._handle_command(user_input)
                     continue
 
@@ -357,16 +368,55 @@ class ODBChatClient:
     # ----------------------
     def _readline_with_cmd_history(self, prompt: str) -> str:
         """
-        Read a line from TTY and support Up/Down navigation ONLY for slash-commands.
-        - Up/Down cycle through history iff the current buffer starts with '/'
+        Read a line from TTY with optional history navigation.
+        - Uses GNU readline when available (better IME handling, Up/Down for all input)
         - Left/Right/Home/End for in-line editing
         - Bracketed paste supported
         Also services matplotlib GUI while waiting for keystrokes.
         Falls back to built-in input() if no TTY or on unsupported platforms.
         """
         try:
-            if (not sys.stdin.isatty() or not sys.stdout.isatty() or os.name == 'nt' or
-                tty is None or termios is None):
+            has_tty = sys.stdin.isatty() and sys.stdout.isatty()
+            use_readline = (
+                has_tty
+                and os.name != 'nt'
+                and readline is not None
+            )
+            if (not has_tty or os.name == 'nt' or tty is None or termios is None):
+                return input(prompt)
+
+            # Optional GUI tick helper reused below
+            def _gui_tick():
+                try:
+                    import matplotlib  # type: ignore
+                    managers = list(getattr(matplotlib._pylab_helpers.Gcf, "get_all_fig_managers")() or [])
+                    for m in managers:
+                        try:
+                            if getattr(m, "canvas", None) is not None:
+                                m.canvas.flush_events()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if use_readline:
+                hook_installed = False
+                try:
+                    if hasattr(readline, "set_pre_input_hook"):
+                        def _hook():
+                            _gui_tick()
+                        readline.set_pre_input_hook(_hook)
+                        hook_installed = True
+                    return input(prompt)
+                finally:
+                    if hook_installed:
+                        try:
+                            readline.set_pre_input_hook()
+                        except Exception:
+                            pass
+            
+            # Fallback to custom reader (for platforms without readline)
+            if tty is None or termios is None:
                 return input(prompt)
 
             # Split prompt into prefix (incl. any newlines) and the final single-line prompt
@@ -381,22 +431,7 @@ class ODBChatClient:
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
 
-            # Optional: GUI tick (only if matplotlib is importable and figures exist)
-            # More robust against transient window-close states.
-            def _gui_tick():
-                try:
-                    import matplotlib  # type: ignore
-                    managers = list(getattr(matplotlib._pylab_helpers.Gcf, "get_all_fig_managers")() or [])
-                    for m in managers:
-                        try:
-                            if getattr(m, "canvas", None) is not None:
-                                m.canvas.flush_events()
-                        except Exception:
-                            # Window might be closing; ignore to keep CLI responsive
-                            pass
-                except Exception:
-                    # matplotlib not available or backend quirks – ignore
-                    pass
+            # Optional: GUI tick helper defined above
 
             # ---- display-width helper (handles emoji, CJK, combining marks) ----
             import unicodedata
@@ -539,10 +574,10 @@ class ODBChatClient:
                                 cursor += 1
                                 redraw()
                             continue
-                        # Up / Down (history iff buffer starts with '/')
+                        # Up / Down (history)
                         if seq in ('A', 'B'):
                             current = ''.join(buf)
-                            if not current.startswith('/') or not self._cmd_history:
+                            if not self._cmd_history:
                                 continue
                             if seq == 'A':
                                 if hist_index is None:
@@ -627,6 +662,54 @@ class ODBChatClient:
             raise
         except Exception:
             return input(prompt)
+
+    def _read_user_message(self, prompt_label: str) -> str:
+        """Read one logical chat message, supporting bracketed-paste bursts."""
+        base_prompt = f"\n🧑 You ({prompt_label} @ {self.temperature}): "
+        history_mark = self._readline_history_length()
+        lines: List[str] = []
+        first = self._readline_with_cmd_history(base_prompt)
+        lines.append(first)
+
+        continuation_prompt = "   … "
+        while self._stdin_has_buffered_data():
+            follow = self._readline_with_cmd_history(continuation_prompt)
+            lines.append(follow)
+
+        self._restore_readline_history(history_mark)
+        return "\n".join(lines)
+
+    def _stdin_has_buffered_data(self) -> bool:
+        if os.name == "nt":
+            return False
+        try:
+            fd = sys.stdin.fileno()
+        except Exception:
+            return False
+        try:
+            r, _, _ = select.select([fd], [], [], 0)
+            return bool(r)
+        except Exception:
+            return False
+
+    def _readline_history_length(self) -> int:
+        if readline is None:
+            return 0
+        try:
+            return readline.get_current_history_length()
+        except Exception:
+            return 0
+
+    def _restore_readline_history(self, length: int) -> None:
+        if readline is None:
+            return
+        try:
+            current = readline.get_current_history_length()
+            while current > length:
+                readline.remove_history_item(current - 1)
+                current -= 1
+        except Exception:
+            pass
 
     # ----------------------
     # Register method
@@ -730,6 +813,8 @@ class ODBChatClient:
                     print("❌ Invalid temperature value")
         elif cmd == "/status":
             await self.check_status()
+        elif cmd == "/llm":
+            await self._cmd_llm(args)
         else:
             print("❓ Unknown command. /help for help.")
 
@@ -755,6 +840,49 @@ class ODBChatClient:
             print(f"Server URL: {self.server_url} ({conn})")
         else:
             print("Usage: /server connect <url> | /server set <url> | /server show")
+
+    async def _cmd_llm(self, args: list[str]):
+        sub = args[0].lower() if args else "status"
+        if sub == "status":
+            if not self.client:
+                print("❌ Not connected. Use /server connect first.")
+                return
+            try:
+                data = await self._tool_json("config.llm_status", {})
+            except Exception as exc:
+                print(f"❌ Unable to fetch LLM status: {exc}")
+                return
+            if not data:
+                print("❌ LLM status unavailable.")
+                return
+            healthy = data.get("healthy")
+            reachable = data.get("reachable")
+            print("\n🧠 LLM Backend Status:")
+            print(f"  Provider : {data.get('provider')}")
+            print(f"  Model    : {data.get('model')}")
+            print(f"  Timeout  : {data.get('timeout')} s")
+            print(f"  Reachable: {'yes' if reachable else 'no'}")
+            print(f"  Healthy  : {'yes' if healthy else 'no'}")
+            last_error = data.get("last_error")
+            if last_error:
+                print(f"  Last error: {last_error}")
+            ping_error = data.get("ping_error")
+            if ping_error and not reachable:
+                print(f"  Ping error: {ping_error}")
+            last_success = data.get("last_success")
+            if last_success:
+                print(f"  Last success timestamp: {last_success}")
+            available = data.get("available") or data.get("available_models")
+            if available:
+                print("  Models:")
+                for name in available:
+                    print(f"    - {name}")
+            return
+        if sub == "reconnect":
+            await self.disconnect()
+            await self.connect()
+            return
+        print("Usage: /llm status | /llm reconnect")
 
     # ----------------------
     # Utilities
@@ -825,9 +953,32 @@ class ODBChatClient:
         code = code.rstrip()
         return code if code.lstrip().startswith("```") else f"```python\n{code}\n```"
 
+    @staticmethod
+    def _is_refusal_text(text: str | None) -> bool:
+        if not text:
+            return False
+        lowered = text.strip().lower()
+        refusal_terms = {
+            "i'm sorry",
+            "i am sorry",
+            "sorry,",
+            "cannot provide",
+            "can't provide",
+            "unable to",
+            "i cannot",
+            "i can't",
+            "抱歉",
+            "無法提供",
+            "無法回答",
+            "不知道",
+        }
+        return any(term in lowered for term in refusal_terms)
+
     def _render_onepass_result(self, data: Dict[str, Any]) -> str:
         mode = (data.get("mode") or "explain").lower()
         output_parts: List[str] = []
+        refusal_text = data.get("text") or data.get("code") or ""
+        is_refusal = self._is_refusal_text(refusal_text)
 
         if mode == "code":
             plan = data.get("plan")
@@ -886,7 +1037,7 @@ class ODBChatClient:
 
         # Citations as before...
         citations = data.get("citations") or []
-        if citations:
+        if citations and not is_refusal:
             print("\n📚 Citations:")
             for cite in citations:
                 title = cite.get("title") if isinstance(cite, dict) else str(cite)

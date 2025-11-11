@@ -3,23 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-
-try:  # Python 3.9+
-    from zoneinfo import ZoneInfo
-except Exception:  # pragma: no cover
-    ZoneInfo = None  # type: ignore
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from server.llm_adapter import LLM
 from server.api.ghrsst_mcp_proxy import _ghrsst_bbox_mean, _ghrsst_point_value
 from server.rag.onepass_core import run_onepass
 from server.tools.rag_onepass_tool import (
@@ -27,11 +19,51 @@ from server.tools.rag_onepass_tool import (
     _norm_mode,
     _norm_plan,
 )
+from server.time_utils import today_tpe
 
 logger = logging.getLogger("odbchat.router")
 
 DEFAULT_FIELDS = ["sst", "sst_anomaly"]
-TPE_TZ = ZoneInfo("Asia/Taipei") if ZoneInfo else None
+BBOX_KEY_SYNONYMS = {
+    "lon0": ("lon0", "west", "left", "minlon", "lon_min"),
+    "lat0": ("lat0", "south", "bottom", "minlat", "lat_min"),
+    "lon1": ("lon1", "east", "right", "maxlon", "lon_max"),
+    "lat1": ("lat1", "north", "top", "maxlat", "lat_max"),
+}
+GHRSST_QUERY_KEYWORDS = (
+    "海溫",
+    "水溫",
+    "sea surface temperature",
+    "sea-surface temperature",
+    "sea temperature",
+    "sst",
+)
+CODE_REQUEST_KEYWORDS = (
+    "程式",
+    "python",
+    "code",
+    "寫",
+    "繪",
+    "畫",
+    "plot",
+    "腳本",
+    "script",
+)
+FULLWIDTH_MAP = str.maketrans(
+    {
+        "（": "(",
+        "）": ")",
+        "［": "[",
+        "］": "]",
+        "，": ",",
+        "。": ".",
+        "：": ":",
+        "－": "-",
+        "　": " ",
+    }
+)
+PAIR_RE = re.compile(r"\(\s*(-?\d+(?:\.\d+)?)\s*[,\uff0c]\s*(-?\d+(?:\.\d+)?)\s*\)")
+BBOX_RE = re.compile(r"\[\s*(-?\d+(?:\.\d+)?)(?:\s*,\s*(-?\d+(?:\.\d+)?)){3}\s*\]")
 NEAREST_KEYWORDS = (
     "今天",
     "今日",
@@ -43,127 +75,6 @@ NEAREST_KEYWORDS = (
     "current",
 )
 
-SYSTEM_PROMPT = (
-    "You are an intent classifier for ocean data questions. "
-    "Every user turn is a JSON object with keys 'today' (YYYY-MM-DD) and 'query'. "
-    "Reply with a single JSON object matching this schema:\n"
-    "{\n"
-    "  \"decision\": \"mcp_tools|explain|code\",\n"
-    "  \"confidence\": number (0-1, optional),\n"
-    "  \"tool\": {\n"
-    "    \"name\": \"ghrsst.point_value|ghrsst.bbox_mean\",\n"
-    "    \"arguments\": object\n"
-    "  } (required when decision is mcp_tools),\n"
-    "  \"rationale\": string (optional)\n"
-    "}.\n"
-    "Rules: respond with JSON only; no markdown or commentary. "
-    "If the query asks for numerical SST at a specific lon/lat use point_value. "
-    "If it asks for SST over a latitude/longitude range use bbox_mean. "
-    "Use the provided 'today' value when a date is needed. "
-    "Return decision='explain' for conceptual questions; 'code' for programming tasks."
-)
-
-FEWSHOT_MESSAGES = [
-    {
-        "role": "user",
-        "content": json.dumps(
-            {
-                "today": "2025-01-05",
-                "query": "今天台灣外海(23N, 123E)海溫多少？",
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "assistant",
-        "content": json.dumps(
-            {
-                "decision": "mcp_tools",
-                "tool": {
-                    "name": "ghrsst.point_value",
-                    "arguments": {
-                        "longitude": 123.0,
-                        "latitude": 23.0,
-                        "date": "2025-01-05",
-                        "fields": DEFAULT_FIELDS,
-                        "method": "nearest",
-                    },
-                },
-                "confidence": 0.82,
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "user",
-        "content": json.dumps(
-            {
-                "today": "2025-01-05",
-                "query": "今天台灣外海經緯度範圍[123, 21, 124, 22] 海溫多少",
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "assistant",
-        "content": json.dumps(
-            {
-                "decision": "mcp_tools",
-                "tool": {
-                    "name": "ghrsst.bbox_mean",
-                    "arguments": {
-                        "bbox": [123.0, 21.0, 124.0, 22.0],
-                        "date": "2025-01-05",
-                        "fields": DEFAULT_FIELDS,
-                        "method": "nearest",
-                    },
-                },
-                "confidence": 0.78,
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "user",
-        "content": json.dumps(
-            {
-                "today": "2025-01-05",
-                "query": "GHRSST 是什麼？",
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "assistant",
-        "content": json.dumps(
-            {
-                "decision": "explain",
-                "confidence": 0.71,
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "user",
-        "content": json.dumps(
-            {
-                "today": "2025-01-05",
-                "query": "幫我寫 Python 把 JSON 轉 CSV",
-            },
-            ensure_ascii=False,
-        ),
-    },
-    {
-        "role": "assistant",
-        "content": json.dumps(
-            {
-                "decision": "code",
-                "confidence": 0.76,
-            },
-            ensure_ascii=False,
-        ),
-    },
-]
 
 
 @dataclass
@@ -175,79 +86,33 @@ class MCPDecision:
     raw_plan: Dict[str, Any] | None = None
 
 
-def _today_tpe() -> str:
-    tz = TPE_TZ
-    now = datetime.now(tz) if tz else datetime.utcnow()
-    return now.strftime("%Y-%m-%d")
-
-
-def _build_messages(query: str, today: str) -> List[Dict[str, str]]:
-    messages: List[Dict[str, str]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-    ]
-    messages.extend(FEWSHOT_MESSAGES)
-    messages.append(
-        {
-            "role": "user",
-            "content": json.dumps(
-                {"today": today, "query": query}, ensure_ascii=False
-            ),
-        }
-    )
-    return messages
-
-
-def _extract_json_obj(text: str) -> Dict[str, Any]:
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if match:
-        snippet = match.group(0)
-        try:
-            return json.loads(snippet)
-        except Exception:
-            logger.debug("Failed to parse JSON from snippet: %s", snippet)
-    return {}
-
-
-def _classify_sync(query: str, today: str) -> MCPDecision:
-    messages = _build_messages(query, today)
-    raw = LLM.chat(messages, temperature=0.0, max_tokens=256)
-    plan = _extract_json_obj(raw)
-
-    decision = str(plan.get("decision", "explain")).strip().lower()
-    if decision not in {"mcp_tools", "explain", "code"}:
-        decision = "explain"
-
-    tool_name = None
-    arguments: Dict[str, Any] | None = None
-    if decision == "mcp_tools":
-        tool = plan.get("tool") or {}
-        tool_name = str(tool.get("name") or "").strip()
-        if not tool_name:
-            decision = "explain"
-        else:
-            arguments = tool.get("arguments") or {}
-            if not isinstance(arguments, dict):
-                arguments = {}
-
-    confidence = plan.get("confidence")
+def _decision_from_spec(spec: Any) -> MCPDecision | None:
+    if not isinstance(spec, dict):
+        return None
+    tool_field = spec.get("tool")
+    arguments = spec.get("arguments")
+    if isinstance(tool_field, dict):
+        tool_name = str(tool_field.get("name") or tool_field.get("tool") or "").strip()
+        if not isinstance(arguments, dict):
+            arguments = tool_field.get("arguments")
+    else:
+        tool_name = str(tool_field or spec.get("name") or "").strip()
+    if not tool_name:
+        return None
+    if not isinstance(arguments, dict):
+        arguments = {}
+    confidence = spec.get("confidence")
     try:
         if confidence is not None:
             confidence = float(confidence)
     except Exception:
         confidence = None
-
     return MCPDecision(
-        decision=decision,
+        decision="mcp_tools",
         tool_name=tool_name,
         arguments=arguments,
         confidence=confidence,
-        raw_plan=plan if isinstance(plan, dict) else None,
+        raw_plan=spec if isinstance(spec, dict) else None,
     )
 
 
@@ -270,8 +135,36 @@ def _ensure_fields(value: Any) -> List[str]:
 
 def _ensure_bbox(value: Any) -> List[float]:
     if isinstance(value, str):
-        numbers = re.findall(r"-?\d+(?:\.\d+)?", value)
-        value = [float(num) for num in numbers]
+        text = _normalize_fullwidth(value)
+        match = BBOX_RE.search(text)
+        if match:
+            text = match.group(0)
+        numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
+        floats = [float(num) for num in numbers]
+        if len(floats) >= 4:
+            value = floats[:4]
+        else:
+            raise ToolError("bbox must contain four numbers [lon0, lat0, lon1, lat1]")
+    elif isinstance(value, dict):
+        floats: List[float] = []
+        for key in ("lon0", "lat0", "lon1", "lat1"):
+            synonyms = BBOX_KEY_SYNONYMS.get(key, (key,))
+            found = None
+            for candidate in synonyms:
+                if candidate in value:
+                    found = value[candidate]
+                    break
+                upper = candidate.upper()
+                if upper in value:
+                    found = value[upper]
+                    break
+            if found is None:
+                raise ToolError(f"bbox dict missing key '{key}'")
+            try:
+                floats.append(float(found))
+            except Exception as exc:  # pragma: no cover
+                raise ToolError(f"Invalid bbox values: {value}") from exc
+        value = floats
     if isinstance(value, list) and len(value) == 4:
         try:
             floats = [float(x) for x in value]
@@ -386,11 +279,18 @@ def _render_tool_text(tool: str, result: Dict[str, Any]) -> str:
     return f"{date}: {payload}"
 
 
-async def _run_onepass_async(query: str, debug: bool) -> Dict[str, Any]:
+async def _run_onepass_async(query: str, debug: bool, today: str) -> tuple[Any, Dict[str, Any]]:
     loop = asyncio.get_running_loop()
 
     def _call() -> Any:
-        return run_onepass(query, k=6, collections=None, temperature=0.2, debug=debug)
+        return run_onepass(
+            query,
+            k=6,
+            collections=None,
+            temperature=0.2,
+            debug=debug,
+            today=today,
+        )
 
     result = await loop.run_in_executor(None, _call)
 
@@ -400,6 +300,7 @@ async def _run_onepass_async(query: str, debug: bool) -> Dict[str, Any]:
     res_plan = getattr(result, "plan", None)
     res_citations = getattr(result, "citations", None) or []
     res_debug = getattr(result, "debug", None)
+    res_mcp = getattr(result, "mcp", None)
 
     payload_out: Dict[str, Any] = {
         "mode": _norm_mode(res_mode, res_code, res_text),
@@ -415,6 +316,9 @@ async def _run_onepass_async(query: str, debug: bool) -> Dict[str, Any]:
     if plan_obj:
         payload_out["plan"] = plan_obj
 
+    if payload_out["mode"] == "mcp_tools" and isinstance(res_mcp, dict):
+        payload_out["mcp"] = res_mcp
+
     if debug and isinstance(res_debug, dict):
         dbg = dict(res_debug)
         dbg.setdefault("mode", payload_out["mode"])
@@ -423,7 +327,7 @@ async def _run_onepass_async(query: str, debug: bool) -> Dict[str, Any]:
             dbg["plan"] = plan_obj
         payload_out["debug"] = dbg
 
-    return payload_out
+    return result, payload_out
 
 
 async def _execute_mcp_tool(
@@ -478,7 +382,14 @@ async def _execute_mcp_tool(
                 )
 
     elif tool == "ghrsst.bbox_mean":
-        bbox = _ensure_bbox(args.get("bbox"))
+        try:
+            bbox = _ensure_bbox(args.get("bbox"))
+        except ToolError as exc:
+            fallback_bbox = _extract_bbox_from_query(query)
+            if fallback_bbox:
+                bbox = fallback_bbox
+            else:
+                raise exc
         normalized_args = {
             "bbox": bbox,
             "date": date,
@@ -550,27 +461,124 @@ async def _execute_mcp_tool(
     return response
 
 
+def _normalize_fullwidth(text: str) -> str:
+    return text.translate(FULLWIDTH_MAP)
+
+
+def _contains_code_request(query: str) -> bool:
+    lowered = query.lower()
+    return any(term in lowered for term in CODE_REQUEST_KEYWORDS)
+
+
+def _extract_point_from_query(query: str) -> Tuple[float, float] | None:
+    normalized = _normalize_fullwidth(query)
+    match = PAIR_RE.search(normalized)
+    if not match:
+        return None
+    try:
+        lon = float(match.group(1))
+        lat = float(match.group(2))
+        return lon, lat
+    except Exception:
+        return None
+
+
+def _extract_bbox_from_query(query: str) -> List[float] | None:
+    normalized = _normalize_fullwidth(query)
+    match = BBOX_RE.search(normalized)
+    if not match:
+        return None
+    fragment = match.group(0)
+    try:
+        return _ensure_bbox(fragment)
+    except ToolError:
+        return None
+
+
+def _looks_like_ghrsst_query(query: str) -> bool:
+    if not query:
+        return False
+    normalized = _normalize_fullwidth(query).lower()
+    if not any(keyword in normalized for keyword in GHRSST_QUERY_KEYWORDS):
+        return False
+    return bool(_extract_point_from_query(query) or _extract_bbox_from_query(query))
+
+
+def _infer_mcp_decision_from_query(query: str, today: str) -> MCPDecision | None:
+    if _contains_code_request(query):
+        return None
+    bbox = _extract_bbox_from_query(query)
+    if bbox:
+        arguments = {
+            "bbox": bbox,
+            "date": today,
+            "fields": DEFAULT_FIELDS,
+            "method": "nearest",
+        }
+        return MCPDecision(
+            decision="mcp_tools",
+            tool_name="ghrsst.bbox_mean",
+            arguments=arguments,
+        )
+    point = _extract_point_from_query(query)
+    if point:
+        lon, lat = point
+        arguments = {
+            "longitude": lon,
+            "latitude": lat,
+            "date": today,
+            "fields": DEFAULT_FIELDS,
+            "method": "nearest",
+        }
+        return MCPDecision(
+            decision="mcp_tools",
+            tool_name="ghrsst.point_value",
+            arguments=arguments,
+        )
+    return None
+
+
 async def classify_and_route(query: str, debug: bool = False) -> Dict[str, Any]:
-    today = _today_tpe()
-    loop = asyncio.get_running_loop()
-    decision = await loop.run_in_executor(None, _classify_sync, query, today)
+    today = today_tpe()
+    try:
+        raw_result, payload = await _run_onepass_async(query, debug, today)
+    except Exception as exc:
+        logger.error("router onepass failed: %s", exc)
+        fallback = {
+            "mode": "explain",
+            "text": "路由判斷階段失敗或逾時，請稍後再試並使用 /llm status 檢查後端。",
+            "source": "router.error",
+            "citations": [],
+        }
+        if debug:
+            fallback["debug"] = {"error": str(exc)}
+        return fallback
 
-    logger.info(
-        "router decision=%s tool=%s confidence=%s",
-        decision.decision,
-        decision.tool_name,
-        decision.confidence,
-    )
+    mode = (payload.get("mode") or "").strip().lower()
+    logger.info("router mode=%s", mode or "<unknown>")
 
-    if decision.decision == "mcp_tools":
+    if mode == "mcp_tools":
+        spec = getattr(raw_result, "mcp", None) or payload.get("mcp")
+        decision = _decision_from_spec(spec)
+        if decision is None or not decision.tool_name:
+            logger.error("mcp mode missing tool specification: %s", spec)
+            fallback = {
+                "mode": "explain",
+                "text": "GHRSST 工具決策缺少資料，請重新提問或提供明確經緯度。",
+                "citations": [],
+            }
+            if debug:
+                fallback["debug"] = {"error": "missing_mcp_spec", "spec": spec}
+            return fallback
         return await _execute_mcp_tool(decision, today, debug, query)
 
-    rag_result = await _run_onepass_async(query, debug)
-    if decision.confidence is not None:
-        rag_result.setdefault("confidence", decision.confidence)
-    if decision.raw_plan and "plan" not in rag_result:
-        rag_result["plan"] = decision.raw_plan
-    return rag_result
+    if mode != "code" and _looks_like_ghrsst_query(query):
+        auto_decision = _infer_mcp_decision_from_query(query, today)
+        if auto_decision:
+            logger.info("router auto-switching to mcp_tools based on query parsing")
+            return await _execute_mcp_tool(auto_decision, today, debug, query)
+
+    return payload
 
 
 def register_router_tool(mcp: FastMCP) -> None:

@@ -69,3 +69,6 @@ curl -s http://127.0.0.1:8001/completion -d '{
 python dev/ingest_mhw.py --root rag --dry-run
 python dev/ingest_mhw.py --root rag --collection odb_mhw_knowledge_v1
 
+export ODB_LLM_PROVIDER=llama-cpp
+export ODB_LLM_MODEL=gemma3:12b
+llama-server -m /home/odbadmin/proj/odbchat/models/google_gemma-3-12b-it-Q5_K_M.gguf -md /home/odbadmin/proj/odbchat/models/google_gemma-3-1b-it-Q4_K_M.gguf -c 6144 -ngl 99 -ngld 24 --parallel 1 -t 16 --threads-batch 16 --batch-size 384 --ubatch-size 384 --kv-unified --no-cont-batching --ctx-checkpoints 0 -fa off --cache-ram 0 --cache-reuse 0 --threads-http 1 --timeout 600 --port 8201

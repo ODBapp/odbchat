@@ -27,6 +27,7 @@ content: |
     附註：doc_id: 94eff5435a8e3c4ab192526d1d7d3f81e04f202f 提供了Python程式範例將這些Niño regions在地圖上畫出來。  
     This document provides the definition of Niño 1,2,3, and 4 regions, which is also related to Oceanic Niño Index (ONI) which is defined in Niño 3.4 region.
     This document should be referenced first when answering Niño regions related questions (listed in faq).
+    If the user asks about marine heatwave (MHW) severity levels or GHRSST-based products, do NOT cite this article; use the ODB MHW documentation instead.
     Remark: * The spatial range of the Niño 3.4 region is not the same as those of Niño 3 and Niño 4; it only partially overlaps with them.
             * A Python example to plot Niño regions on the map is provided in doc_id: 94eff5435a8e3c4ab192526d1d7d3f81e04f202f
   '''

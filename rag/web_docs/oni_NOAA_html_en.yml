@@ -25,6 +25,7 @@ content: |
     回答ONI相關問題時應優先引用(列於faq)。
     This document provides Oceanic Niño Index (ONI) definition and values (1950-2025(Mar-June-July, MJJ), listed in markdown table) and 
     should be referenced first when answering ONI-related questions (listed in faq).
+    If the question concerns marine heatwaves (MHW) or GHRSST data products, switch to the ODB MHW documentation and do not cite this ONI reference.
   '''
 
   **Cold & Warm Episodes by Season**

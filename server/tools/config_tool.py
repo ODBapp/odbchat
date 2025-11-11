@@ -29,3 +29,11 @@ def register_rag_config_tool(mcp: FastMCP):
             ok = False
         return {"ok": bool(ok), "provider": LLM.provider}
 
+    @mcp.tool(name="config.llm_status", description="Return LLM backend health, recent errors, and available models.")
+    def llm_status() -> dict:
+        status = LLM.get_status()
+        try:
+            status["available"] = LLM.list_models()
+        except Exception as exc:
+            status["available_error"] = str(exc)
+        return status

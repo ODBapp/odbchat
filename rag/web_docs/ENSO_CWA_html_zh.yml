@@ -22,10 +22,12 @@ content: |
   # Usage Note
   '''
     本文件提供聖嬰與反聖嬰現象與ONI指數的科學圖文說明，回答ENSO相關問題時應優先引用(列於faq)。
+    若使用者問題與海洋熱浪等級、GHRSST 或 ODB MHW 相關，請改引用 mhw_* 文件，切勿使用本篇內容作為依據。
     請注意網站附圖包括聖嬰、反聖嬰在赤道東太平洋到中太平洋(Niño區域)觀察到SST anomalies不同的分佈，
     以及ONI指數逐三個月的時間序列比較（在12-1-2月,DJF,時通常最盛行）提供答覆時可將網站圖片網址一併提供。
     This document provides scientific illustrations and explanations of El Niño, La Niña, and the ONI index.
     It should be the primary reference when answering El Niño related topics (listed in faq).
+    If the question is about marine heatwaves (MHW) or GHRSST data products, do NOT cite this article; switch to the ODB MHW references instead.
     Note: The website graphics include information about the differing SST anomaly patterns observed in the Niño regions during El Niño and La Niña events,
     and the 3-month ONI time series (typically peaking in December–February, DJF). Image links from the site can be included when responding.
   '''

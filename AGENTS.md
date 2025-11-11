@@ -34,3 +34,11 @@
 - Ensure `mcp_config.json` points to your server URL.
 - Available tools: `chat_with_odb`, `list_available_models`, `check_ollama_status`.
 - Server uses `OLLAMA_URL` constant (127.0.0.1:11434). Update it if your Ollama host differs.
+
+## One-Pass LLM Routing Principle
+- Our assistant uses a **single LLM call** to classify intent, plan API usage, and produce either explanations, GHRSST MCP calls, or runnable code. No hard-coded keyword routing; the LLM sees structured context (RAG notes, OAS whitelist, prior plan) and returns tagged blocks (`<<<MODE>>>`, `<<<PLAN>>>`, `<<<CODE>>>`, `<<<ANSWER>>>`).
+- The classifier must decide between `explain`, `code`, or MCP tooling by reasoning over the whole question and retrieved notes; avoid brittle “if contains word X” shortcuts.
+- Planner/coder stages inherit the classifier decision inside the same prompt. Plans must stay within the whitelist and capture the user’s actual request; code mode produces a single Python script aligned with the plan.
+- Explain mode should answer directly from RAG notes, cite sources, and stay out of code fences unless explicitly asked.
+- When adding new behavior, preserve this one-pass structure: enrich the prompt/context or LLM instructions rather than introducing hard-coded branching.
+- **Next-step implementation**: `router.answer` and `server/rag/onepass_prompts.py` must converge to a single classifier. The unified classifier should emit `code | explain | fallback | mcp_tools` (the last one only when GHRSST tools are suitable). Once the unified mode is picked, the rest of the one-pass pipeline executes accordingly (code generation, RAG answer, fallback clarification, or GHRSST proxy). This eliminates redundant stages, reduces latency, and ensures follow-up code questions stay in the code path.
