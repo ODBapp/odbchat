@@ -25,6 +25,8 @@ async def test_cli_chat_explain(monkeypatch, capsys):
     }
     client = ODBChatClient()
     client.client = DummyMCPClient(responses)
+    client.default_tz = "Asia/Taipei"
+    client._current_query_time = lambda: "2025-01-10T00:00:00+08:00"
     output = await client.chat("什麼是海洋熱浪?")
     captured = capsys.readouterr().out
     assert "Marine heatwaves explained" in captured
@@ -46,6 +48,8 @@ async def test_cli_chat_code(monkeypatch, capsys):
     }
     client = ODBChatClient()
     client.client = DummyMCPClient(responses)
+    client.default_tz = "Asia/Taipei"
+    client._current_query_time = lambda: "2025-01-10T00:00:00+08:00"
     output = await client.chat("請提供程式碼")
     captured = capsys.readouterr().out
     assert "Plan" not in captured
@@ -79,10 +83,16 @@ async def test_cli_chat_mcp(monkeypatch, capsys):
     }
     client = ODBChatClient()
     client.client = DummyMCPClient(responses)
+    client.default_tz = "Asia/Taipei"
+    client._current_query_time = lambda: "2025-01-10T00:00:00+08:00"
     output = await client.chat("今天台灣外海(23N, 123E)海溫多少？")
     captured = capsys.readouterr().out
     assert "SST" in captured
     assert "2025-01-10" in output
+    assert client.client.calls
+    _, payload = client.client.calls[0]
+    assert payload["tz"] == "Asia/Taipei"
+    assert payload["query_time"] == "2025-01-10T00:00:00+08:00"
 
 
 @pytest.mark.asyncio
@@ -99,6 +109,8 @@ async def test_cli_chat_refusal_no_citations(monkeypatch, capsys):
     }
     client = ODBChatClient()
     client.client = DummyMCPClient(responses)
+    client.default_tz = "Asia/Taipei"
+    client._current_query_time = lambda: "2025-01-10T00:00:00+08:00"
     await client.chat("問題")
     captured = capsys.readouterr().out
     assert "抱歉" in captured

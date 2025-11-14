@@ -26,6 +26,7 @@ import json
 import sys
 from typing import Optional, Dict, Any, List
 import os
+from datetime import datetime
 try:  # platform-dependent
     import tty  # type: ignore
     import termios  # type: ignore
@@ -35,6 +36,10 @@ except Exception:  # pragma: no cover
 import argparse
 import select
 import codecs
+try:
+    from zoneinfo import ZoneInfo  # type: ignore
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 from fastmcp import Client
 try:  # Optional; improves line editing on POSIX systems
     import readline  # type: ignore
@@ -65,6 +70,7 @@ class ODBChatClient:
         self._help["/llm"] = "/llm status | /llm reconnect"
         self.server_provider = "unknown"
         self.server_model = default_model
+        self.default_tz = os.getenv("ODBCHAT_TZ", "Asia/Taipei")
 
     # ----------------------
     # Connection management
@@ -254,14 +260,44 @@ class ODBChatClient:
         mod  = getattr(self, "server_model", None) or self.current_model
         return f"{prov}:{mod}"
 
+    def _resolved_tz(self) -> str:
+        return self.default_tz or "Asia/Taipei"
+
+    def _current_query_time(self) -> str:
+        tz_name = self._resolved_tz()
+        tzinfo = None
+        if ZoneInfo:
+            try:
+                tzinfo = ZoneInfo(tz_name)
+            except Exception:  # pragma: no cover
+                tzinfo = None
+        if tzinfo is None:
+            try:
+                tzinfo = datetime.now().astimezone().tzinfo
+            except Exception:  # pragma: no cover
+                tzinfo = None
+        if tzinfo is not None:
+            now = datetime.now(tzinfo)
+        else:
+            now = datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.astimezone()
+        return now.isoformat()
+
     # ----------------------
     # Chat (stream via Ollama → fallback to MCP tool)
     # ----------------------
     async def chat(self, query: str, model: Optional[str] = None, context: Optional[str] = None):
         use_model = model or self.current_model or DEFAULT_MODEL
+        tz_name = self._resolved_tz()
+        query_time_iso = self._current_query_time()
         if self.client:
             try:
-                payload = {"query": query}
+                payload = {
+                    "query": query,
+                    "tz": tz_name,
+                    "query_time": query_time_iso,
+                }
                 if self.debug:
                     payload["debug"] = True
                 result = await self.client.call_tool("router.answer", payload)

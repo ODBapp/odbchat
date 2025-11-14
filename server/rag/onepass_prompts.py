@@ -34,7 +34,8 @@ def _sysrule_classifier() -> str:
         "- Decide one token: 'code', 'explain', 'fallback', or 'mcp_tools'.\n"
         "- Output 'mcp_tools' when the user explicitly wants actual SST numbers (單點或經緯度範圍的海溫) at a particular date or uses words with time connotations such as now, recently, or today, etc.\n"
         "- If the question contains negative phrases like '不要程式', '不用 API', '除了程式以外', to ask for explanations, methods or tools but exclude using code, treat it as 'explain'.\n"
-        "- Output 'code' ONLY when the user explicitly requests a script/programmatic step (e.g., '寫程式', 'Python code', 'API sample', 'plot with code') OR the request can be fulfilled only through coding (e.g., plotting map/分佈地圖, timeseries chart/時序分析) OR clearly references modifying/continuing the previous code (phrases like '改變/畫', '更新/換', '再試一次', 上次程式碼有錯...', '上一個結果加上…', explicit parameter changes, etc.).\n"
+        "- Output 'code' when the user explicitly requests a script/programmatic step (e.g., '寫程式', '如何用程式…', 'Python code', 'API 範例', '畫圖程式') OR the request can be fulfilled only through coding (e.g., plotting map/分佈地圖, 時序分析) OR clearly references modifying/continuing the previous code (phrases like '改變/畫', '更新/換', '再試一次', '上一個結果加上…', explicit parameter changes, etc.). If details (bbox/date) are missing, still choose MODE=code and make reasonable assumptions in the plan.\n"
+        "- If the user asks how to use a GUI/CLI tool (e.g., Hidy Viewer, ODBchat CLI) without requesting new code, treat it as 'explain' even if the question includes verbs like '畫' or '繪製'.\n"
         "- Output 'explain' for questions that ask to 描述/定義/比較/列舉/查詢資訊、GUI/工具/平台、資料來源、可視化需求等。\n"
         "- Output 'fallback' when the input is nonsense/typo, pure pleasantry (e.g., '謝謝', 'bye'), or otherwise lacks a clear technical request. Fallback replies should be short clarifications with no citations.\n"
         "- When uncertain between code or explain, prefer 'explain'.\n"
@@ -55,6 +56,7 @@ def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
         f"(3) 'append' param {append_usage}\n\n"
         "- Use ONLY param names from the whitelist; do not invent aggregated params like 'bbox' or 'bounding_box'.\n"
         "- If PLAN has both 'start' and 'end' whitelisted, include both (never leave 'end' empty).\n\n"
+        "- When the user omits spatial/temporal details, infer a sensible bbox/time window (document it in PLAN) instead of asking follow-up questions.\n"
         "CSV / JSON selection:\n"
         "- Prefer JSON if the user didn't explicitly ask CSV/file download.\n"
         "- For CSV: choose '/csv' endpoint if present; otherwise ONLY if 'format' enum includes 'csv', set format='csv'.\n\n"
@@ -68,7 +70,7 @@ def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
         "- Use ISO dates (YYYY-MM-DD).\n\n"
         "Param 'append' guidance:\n"
         f"- Allowed values: {allowed_append}\n"
-        "- Infer variables from intent (e.g., SST→'sst'; anomaly→'sst_anomaly'; MHW等級→'level').\n"
+        "- Infer variables from intent (e.g., '海溫'/'SST' → 'sst'; '距平'/'anomaly' → 'sst_anomaly'; '海洋熱浪'/'heatwave' without extra qualifiers → 'level'). Always set 'level' when the user just says “海洋熱浪分佈/heatwave map” (unless they explicitly ask for anomaly/SST instead).\n"
         "- If analysis/plotting requires variables and 'append' is allowed, DO NOT leave it empty.\n\n"
         "MHW chunking constraints (decide here for CODE to implement):\n"
         "- Pick one 'chunk_rule' for MHW endpoints:\n"
@@ -97,7 +99,7 @@ def _sysrule_code_assistant(oas_info: Dict[str, Any]) -> str:
         "  Split ONLY via start/end dates; keep spatial params fixed; concat results at the end (pd.concat).\n"
         "  Respect PLAN['params']['start']/'end' when present; compute per-segment start/end strings and update params per request.\n"
         "  Required pattern: base_params = PLAN['params'].copy(); iterate periods, set params = base_params.copy(); params['start']=segment_start; params['end']=segment_end; requests.get(..., params=params, timeout=60); collect each chunk and pandas.concat at the end.\n"
-        "- JSON: r.json() → DataFrame；CSV: only for '/csv' or enum format='csv' using pandas.read_csv(io.StringIO(r.text)).\n"
+        "- JSON: assign raw = r.json(); ALWAYS convert via pd.DataFrame(raw) before any filtering/plotting (never treat the raw JSON as the DataFrame). CSV: only for '/csv' or enum format='csv' using pandas.read_csv(io.StringIO(r.text)).\n"
         "- If bbox crosses 180°/0° split requests and concat.\n"
         "- If 'date' present → to_datetime and sort chronologically.\n"
         "- Honor PLAN['plot_rule']: 'timeseries' → use plt.figure(), plt.plot(df['date'], ...), label axes/title/legend, and plt.show(); 'map' → build a 2D grid: pivot_table or reshaping so that Z has shape (len(lat_unique), len(lon_unique)), create Lon, Lat via numpy.meshgrid, then plt.pcolormesh(Lon, Lat, Z, shading='auto') with colorbar and plt.show(); missing/empty → skip plotting.\n"
@@ -106,17 +108,20 @@ def _sysrule_code_assistant(oas_info: Dict[str, Any]) -> str:
         "- Return the script in a code fence. CODE cannot be empty.\n"
     )
 
-def _sysrule_mcp(today: str) -> str:
+def _sysrule_mcp(today: str, tz: str, query_time: str) -> str:
     return (
-        "GHRSST MCP rules:\n"
-        "- Choose MODE='mcp_tools' only when the user requests actual SST numbers for a lon/lat point or a geographic box (e.g., '今天台灣外海 23N,123E 海溫多少').\n"
-        "- Use 'ghrsst.point_value' for single points (need 'longitude' and 'latitude'); use 'ghrsst.bbox_mean' for ranges (need bbox [lon0, lat0, lon1, lat1]). All floats in decimal degrees.\n"
-        "- bbox MUST be a JSON array of exactly four numbers [lon0, lat0, lon1, lat1]; do NOT wrap it in a string.\n"
-        "- If the user omits the date, set date='{today}'. Always use ISO format YYYY-MM-DD.\n"
-        "- Default 'fields' to ['sst','sst_anomaly'] unless the user requests a subset.\n"
-        "- Set 'method' to 'nearest' when the query asks for 今日/現在/最新 or when requesting the provided date; otherwise use 'exact'.\n"
-        "- Include optional 'confidence' 0-1 to indicate certainty.\n"
-        "- Output a <<<MCP>>> JSON block: {\"tool\":\"ghrsst.point_value|ghrsst.bbox_mean\",\"arguments\":{...},\"confidence\":0.0-1.0?,\"rationale\":\"<optional>\"}.\n"
+        "MCP tool rules:\n"
+        "GHRSST (SST):\n"
+        "- Use 'ghrsst.point_value' for single lon/lat points; 'ghrsst.bbox_mean' for lon/lat ranges [lon0,lat0,lon1,lat1]. All floats in decimal degrees.\n"
+        "- bbox MUST be a JSON array of exactly four numbers; do NOT wrap it in a string.\n"
+        "- If 'date' missing, set date='{today}'. Default 'fields'=['sst','sst_anomaly']. Use method='nearest' for 今日/現在/最新, else 'exact'.\n"
+        "\n"
+        "Tide/Sun/Moon:\n"
+        "- Use 'tide.forecast' for any question mentioning tides, sun/moon rise/set, or moon phase.\n"
+        "- Always include 'tz' (IANA, e.g., '{tz}') AND 'query_time' (ISO-8601, e.g., '{query_time}') so the tool can compute 'state_now', 'since_extreme', 'until_extreme'.\n"
+        "- Provide location via 'longitude'+'latitude' (floats) or 'station_id'. Set 'date' if user asks for a different day (default '{today}').\n"
+        "\n"
+        "- Output a <<<MCP>>> JSON block: {\"tool\":\"ghrsst.point_value|ghrsst.bbox_mean|tide.forecast\",\"arguments\":{...},\"confidence\":0.xx,\"rationale\":\"...\"}."
     )
 
 def _sysrule_explain(force_zh: bool) -> str:
@@ -125,6 +130,7 @@ def _sysrule_explain(force_zh: bool) -> str:
         "You are an ODB assistant. Provide a concise explanation that answers the question.\n"
         + lang +
         "- Use ONLY provided notes for specific resources; no code.\n"
+        "- When the question asks about GUI/非程式工具, explicitly mention every relevant interactive option found in the notes (e.g., Hidy Viewer, ODBchat CLI) with a short description and URL. Never claim a tool is unavailable if the notes describe one.\n"
         "- Keep it short but complete.\n"
     )
 
@@ -141,7 +147,10 @@ def build_main_prompt(
     prev_plan: Dict[str, Any] | None = None,
     followup_hint: bool = False,
     today: str,
+    tz: str,
+    query_time: str,
     ghrsst_hint: bool = False,
+    tide_hint: bool = False,
 ) -> str:
     strict_format = (
         "ABSOLUTE OUTPUT RULES:\n"
@@ -158,13 +167,13 @@ def build_main_prompt(
         "- NEVER wrap any block in markdown fences (no ```json or ```python). Output the tags directly.\n"
         "If MODE=mcp_tools:\n"
         "- Do NOT output PLAN/CODE. Instead output a <<<MCP>>> JSON block containing tool name, arguments, and optional confidence/rationale.\n"
-        "- The tool must be one of ghrsst.point_value or ghrsst.bbox_mean.\n"
+        "- The tool must be one of ghrsst.point_value, ghrsst.bbox_mean, or tide.forecast.\n"
         "\n"
         "STRICT OUTPUT FORMAT (use these exact tagged blocks):\n"
         "<<<MODE>>>{code|explain|fallback|mcp_tools}<<<END>>>\n"
         "<<<PLAN>>>{ \"endpoint\": \"/<path>\", \"params\": {\"<param>\": \"<value>\"}, \"chunk_rule\": \"<monthly|yearly|decade or empty>\", \"plot_rule\": \"<timeseries|map or empty>\"}<<<END>>>  # ONLY when MODE=code\n"
         "<<<CODE>>>\n<single runnable python script>\n<<<END>>>  # ONLY when MODE=code\n"
-        "<<<MCP>>>\n{\"tool\":\"ghrsst.point_value|ghrsst.bbox_mean\",\"arguments\":{...},\"confidence\":0.xx,\"rationale\":\"...\"}\n<<<END>>>  # ONLY when MODE=mcp_tools\n"
+        "<<<MCP>>>\n{\"tool\":\"ghrsst.point_value|ghrsst.bbox_mean|tide.forecast\",\"arguments\":{...},\"confidence\":0.xx,\"rationale\":\"...\"}\n<<<END>>>  # ONLY when MODE=mcp_tools\n"
         "<<<ANSWER>>>\n<text answer>\n<<<END>>>\n"
     )
 
@@ -173,16 +182,18 @@ def build_main_prompt(
     coder      = _sysrule_code_assistant(whitelist)
     force_zh   = bool(re.search(r"[\u4e00-\u9fff]", query))
     explainer  = _sysrule_explain(force_zh)
-    mcp_rules  = _sysrule_mcp(today)
+    mcp_rules  = _sysrule_mcp(today, tz, query_time)
     user_tmpl  = "{query}"
     user       = _fmt_user_template(user_tmpl, query=query, top_k=top_k)
     prev_plan_blob = json.dumps(prev_plan, ensure_ascii=False) if prev_plan else "(none)"
 
     ghrsst_line = "yes" if ghrsst_hint else "no"
+    tide_line = "yes" if tide_hint else "no"
 
     return (
         "You are an ODB assistant that does Classifier, Planner, Coder, and Explainer in ONE pass.\n"
         "Think step-by-step INTERNALLY, but NEVER print your reasoning.\n"
+        "Do NOT ask the user for clarifications; make reasonable assumptions and proceed.\n"
         "Only print the tagged blocks defined in STRICT OUTPUT FORMAT.\n"
         "STEP 1 — " + classifier + "\n"
         "IF MODE=code THEN STEP 2A (Planner) — " + planner + "\n"
@@ -193,15 +204,21 @@ def build_main_prompt(
         + strict_format + "\n"
         "---- CONTEXT ----\n"
         f"RAG NOTES:\n{(notes or '').strip()}\n\n"
-        f"TODAY (UTC+8): {today}\n\n"
+        f"TODAY (UTC+8): {today}\nCURRENT TZ: {tz}\nCURRENT QUERY TIME: {query_time}\n\n"
         f"PREVIOUS PLAN (inherit unless user explicitly changes values):\n{prev_plan_blob}\n\n"
         f"FOLLOW-UP HINT (based on user phrasing): {'yes' if followup_hint else 'no'}\n"
         "If hint=yes and a prior plan exists, prefer MODE=code and update only params explicitly mentioned in the new query.\n\n"
         f"GHRSST SST-REQUEST HINT: {ghrsst_line}\n"
-        "If this hint is 'yes', the user is asking for actual ocean SST numbers (coordinates/bbox). "
-        "UNLESS the user explicitly requests code/program/寫程式, you MUST output MODE=mcp_tools and supply the <<<MCP>>> block. "
-        "Only choose code when the user clearly asks for programming steps.\n\n"
+        f"TIDE REQUEST HINT: {tide_line}\n"
+        "If a hint is 'yes', default to MODE=mcp_tools unless the user explicitly requests code/program instructions.\n\n"
         f"OAS whitelist:\n{json.dumps(_compact_whitelist(whitelist), ensure_ascii=False)}\n\n"
+        "EXAMPLES:\n"
+        "1) Q: (121.5,25.0) 現在是漲潮嗎？何時滿潮？\n"
+        "   → MODE=mcp_tools, <<<MCP>>> tool='tide.forecast', args include lon/lat, date=today, tz, query_time.\n"
+        "2) Q: 今天台北日出日落？月相？\n"
+        "   → MODE=mcp_tools, tide.forecast with lon/lat (or station), tz+query_time.\n"
+        "3) Q: GHRSST 是什麼？\n"
+        "   → MODE=explain with citations.\n\n"
         f"QUESTION:\n{user}\n"
     )
 

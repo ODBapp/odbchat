@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 from server.rag.onepass_prompts import build_continue_prompt, build_main_prompt
 from server.llm_adapter import LLM
-from server.time_utils import today_tpe
+from server.time_utils import now_iso_in_tz, resolve_tz_name, today_in_tz
 
 import yaml
 from qdrant_client import QdrantClient
@@ -104,6 +104,31 @@ GHRSST_KEYWORDS = (
     "sea-surface temperature",
     "sea temperature",
     "surface temp",
+)
+TIDE_TOOL_KEYWORDS = (
+    "潮",
+    "滿潮",
+    "乾潮",
+    "漲潮",
+    "退潮",
+    "潮汐",
+    "日出",
+    "日落",
+    "月出",
+    "月落",
+    "月相",
+    "tide",
+    "high tide",
+    "low tide",
+    "sunrise",
+    "sunset",
+    "moonrise",
+    "moonset",
+    "moon phase",
+    "moon rise",
+    "moon set",
+    "sun rise",
+    "sun set",
 )
 GHRSST_GEO_TOKENS = ("lon", "lat", "bbox", "經緯", "座標", "範圍")
 COORD_PAIR_RE = re.compile(r"\(\s*-?\d{1,3}(?:\.\d+)?,\s*-?\d{1,2}(?:\.\d+)?\s*\)")
@@ -1126,6 +1151,9 @@ def decide_and_generate(
     debug: bool = False,
     today: str,
     ghrsst_hint: bool = False,
+    tz: str = "Asia/Taipei",
+    query_time: str = "",
+    tide_hint: bool = False,
 ) -> Dict[str, Any]:
     prompt = build_main_prompt(
         query=query,
@@ -1136,6 +1164,9 @@ def decide_and_generate(
         followup_hint=followup_hint,
         today=today,
         ghrsst_hint=ghrsst_hint,
+        tz=tz,
+        query_time=query_time,
+        tide_hint=tide_hint,
     )
 
     # 只在這裡印一次 prompt 尺寸（可選）
@@ -1330,6 +1361,13 @@ def _looks_like_ghrsst_request(query: str) -> bool:
     return coord_like or has_geo_token or has_region or (has_temporal and digits >= 2)
 
 
+def _looks_like_tide_request(query: str) -> bool:
+    if not query:
+        return False
+    lowered = query.lower()
+    return any(keyword in lowered for keyword in TIDE_TOOL_KEYWORDS)
+
+
 def _looks_like_unclear_answer(text: str) -> bool:
     if not text:
         return False
@@ -1371,6 +1409,8 @@ def run_onepass(
     temperature: float = 0.2,
     debug: bool = False,
     today: Optional[str] = None,
+    tz: Optional[str] = None,
+    query_time: Optional[str] = None,
 ) -> OnePassResult:
     global LAST_PLAN
     t0 = time.perf_counter()
@@ -1382,9 +1422,14 @@ def run_onepass(
         fallback.debug = {"error": "query_too_short"}
         return fallback
 
+    tz_value = resolve_tz_name(tz)
+    query_time_value = query_time or now_iso_in_tz(tz_value)
+    today_value = today or today_in_tz(tz_value)
+
     prev_plan = LAST_PLAN.copy() if isinstance(LAST_PLAN, dict) else None
     followup_hint = _looks_like_followup(query, prev_plan)
     ghrsst_hint = _looks_like_ghrsst_request(query)
+    tide_hint = _looks_like_tide_request(query)
 
     hits_raw = search_qdrant(query, k=max(k, 1) * 3, collections=collections)
 
@@ -1404,7 +1449,6 @@ def run_onepass(
         logger.info("[onepass] notes_len=%d preview:\n%s", nlen, nhead)
 
     llm_id = f"{LLM.provider}:{LLM.model}"
-    today_value = today or today_tpe()
 
     result = decide_and_generate(
         query=query,
@@ -1416,7 +1460,10 @@ def run_onepass(
         max_continue=True,
         debug=debug_enabled,
         today=today_value,
+        tz=tz_value,
+        query_time=query_time_value,
         ghrsst_hint=ghrsst_hint,
+        tide_hint=tide_hint,
     )
     if isinstance(result, dict):
         result = _to_result(result)

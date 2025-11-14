@@ -17,6 +17,7 @@ from typing import Any
 import mcp.types
 from fastmcp import FastMCP
 from fastmcp.client import Client as MCPClient
+from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,9 @@ logger = logging.getLogger(__name__)
 # Public endpoint for the upstream GHRSST MCP tools. Allow overriding via env.
 GHRSST_MCP_URL = os.getenv(
     "GHRSST_MCP_URL",
-    "https://eco.odb.ntu.edu.tw/mcp/ghrsst",
+    "https://eco.odb.ntu.edu.tw/mcp/metocean",
 )
+GHRSST_UA = os.getenv("GHRSST_MCP_USER_AGENT", "metocean-mcp")
 
 
 async def _call_ghrsst_tool(tool_name: str, payload: dict[str, Any]) -> Any:
@@ -36,7 +38,8 @@ async def _call_ghrsst_tool(tool_name: str, payload: dict[str, Any]) -> Any:
     """
 
     try:
-        async with MCPClient(GHRSST_MCP_URL) as client:
+        transport = StreamableHttpTransport(GHRSST_MCP_URL, headers={"User-Agent": GHRSST_UA})
+        async with MCPClient(transport) as client:
             result = await client.call_tool(tool_name, payload)
     except ToolError:
         # ToolError already carries a helpful message; re-raise for FastMCP to surface.
