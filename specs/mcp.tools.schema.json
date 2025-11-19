@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "MCP Tool Schemas",
-  "version": "0.1.0",
+  "title": "ODBchat MCP Tool Schemas",
+  "version": "0.3.7",
   "tools": {
     "rag.onepass_answer.input": {
       "type": "object",
@@ -19,10 +19,19 @@
       "type": "object",
       "required": ["mode", "citations"],
       "properties": {
-        "mode": { "enum": ["explain", "code"] },
+        "mode": { "enum": ["explain", "code", "fallback", "mcp_tools"] },
         "text": { "type": "string" },
         "code": { "type": "string" },
         "plan": { "type": "object" },
+        "mcp": {
+          "type": "object",
+          "properties": {
+            "tool": { "type": "string" },
+            "arguments": { "type": "object" },
+            "raw_plan": { "type": "object" }
+          },
+          "additionalProperties": true
+        },
         "citations": {
           "type": "array",
           "items": {
@@ -69,6 +78,56 @@
         }
       },
       "additionalProperties": false
+    },
+    "router.answer.input": {
+      "type": "object",
+      "required": ["query"],
+      "properties": {
+        "query": { "type": "string", "minLength": 1 },
+        "tz": { "type": "string", "minLength": 1 },
+        "query_time": { "type": "string", "format": "date-time" },
+        "debug": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "router.answer.output": {
+      "type": "object",
+      "required": ["mode", "citations"],
+      "properties": {
+        "mode": { "enum": ["explain", "code", "fallback", "mcp_tools"] },
+        "text": { "type": "string" },
+        "code": { "type": "string" },
+        "plan": { "type": "object" },
+        "tool": { "type": "string" },
+        "arguments": { "type": "object" },
+        "result": { "type": "object" },
+        "error": { "type": "string" },
+        "confidence": { "type": "number" },
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "source", "chunk_id"],
+            "properties": {
+              "title": { "type": "string" },
+              "source": { "type": "string" },
+              "chunk_id": { "type": "integer" }
+            }
+          }
+        },
+        "debug": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string" },
+            "plan": { "type": "object" },
+            "code_len": { "type": "integer" },
+            "arguments": { "type": "object" },
+            "error": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
     }
   }
 }

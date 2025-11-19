@@ -72,3 +72,4 @@
     - Router now prioritizes `tide.forecast` over GHRSST when a query mentions both tide and SST for the same lon/lat point, and it forces `tide.forecast` even if the classifier insisted on MODE=code (so “海況/浪高/潮高” prompts never fall back to Python snippets); regression tests cover the new behavior.
 #### v0.3.7 Centralized keyword detection (server/keyword_sets.py) and use REGEX cues for keyword lists.
     - Fixed tide-specific regex cues so English prompts like “tidal condition” or “tides at (x,y)” correctly trigger detailed tide summaries (instead of sun/moon-only fallbacks); updated router tests ensure `tide.forecast` handles N/E coordinate tokens and future-date summaries reliably.
+    - Bumped MCP schemas to v0.3.7, documented router/metocean behavior in `specs/odbchat_spec_v0_3_7.md` and `specs/odbchat_mcp_tools_metocean_integration_spec_v0_3_7.md`, and added schema coverage for `router.answer`.
