@@ -690,3 +690,89 @@ async def test_router_prefers_tide_when_query_mentions_tide_and_sst(monkeypatch)
 
     assert result["mode"] == "mcp_tools"
     assert result["tool"] == "tide.forecast"
+
+
+@pytest.mark.asyncio
+async def test_router_forces_tide_even_if_mode_is_code(monkeypatch):
+    async def fake_onepass(query, debug, today, tz, query_time):
+        payload = {"mode": "code", "citations": []}
+        return DummyResult(mode="code", text="", mcp=None), payload
+
+    async def fake_tide(**kwargs):
+        return {
+            "date": "2025-01-10",
+            "tz": TEST_TZ,
+            "tide": {
+                "highs": [{"time": "2025-01-10T10:00:00+08:00", "height_cm": 42}],
+                "lows": [{"time": "2025-01-10T04:00:00+08:00", "height_cm": -20}],
+            },
+            "sun": {},
+            "moon": {},
+            "moonphase": {},
+        }
+
+    monkeypatch.setattr(router, "_run_onepass_async", fake_onepass)
+    monkeypatch.setattr(router, "_tide_forecast", fake_tide)
+
+    result = await router.classify_and_route(
+        "(121.5,25.0) 何時滿潮？",
+        tz=TEST_TZ,
+        query_time=TEST_QUERY_TIME,
+        debug=False,
+    )
+
+    assert result["mode"] == "mcp_tools"
+    assert result["tool"] == "tide.forecast"
+    assert "此點位並無潮汐資料" not in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_router_tide_no_data_appends_notice(monkeypatch):
+    async def fake_onepass(query, debug, today, tz, query_time):
+        payload = {"mode": "explain", "citations": []}
+        return DummyResult(mode="explain", text=""), payload
+
+    async def fake_tide(**kwargs):
+        return {
+            "date": "2025-01-10",
+            "tz": TEST_TZ,
+            "tide": {},
+            "sun": {},
+            "moon": {},
+            "moonphase": {},
+        }
+
+    monkeypatch.setattr(router, "_run_onepass_async", fake_onepass)
+    monkeypatch.setattr(router, "_tide_forecast", fake_tide)
+
+    result = await router.classify_and_route(
+        "(121.5,25.0) 哪裡潮汐？",
+        tz=TEST_TZ,
+        query_time=TEST_QUERY_TIME,
+        debug=False,
+    )
+
+    assert "此點位並無潮汐資料" in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_router_forces_ghrsst_even_if_mode_is_code(monkeypatch):
+    async def fake_onepass(query, debug, today, tz, query_time):
+        payload = {"mode": "code", "citations": []}
+        return DummyResult(mode="code", text=""), payload
+
+    async def fake_point(lon, lat, date=None, fields=None, method=None):
+        return {"region": [lon, lat], "date": date, "sst": 27.0, "sst_anomaly": 0.1}
+
+    monkeypatch.setattr(router, "_run_onepass_async", fake_onepass)
+    monkeypatch.setattr(router, "_ghrsst_point_value", fake_point)
+    monkeypatch.setattr(router, "_ghrsst_bbox_mean", lambda **_: None)
+
+    result = await router.classify_and_route(
+        "(121.5,25.0) 海溫多少？",
+        tz=TEST_TZ,
+        query_time=TEST_QUERY_TIME,
+        debug=False,
+    )
+
+    assert result["tool"] == "ghrsst.point_value"

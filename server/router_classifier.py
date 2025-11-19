@@ -15,6 +15,17 @@ from fastmcp.exceptions import ToolError
 
 from server.api.ghrsst_mcp_proxy import _ghrsst_bbox_mean, _ghrsst_point_value
 from server.api.metocean_mcp_proxy import _tide_forecast
+from server.keyword_sets import (
+    CLI_TOOL_REGEX,
+    CODE_REGEX,
+    GHRSST_GEO_REGEX,
+    GHRSST_REGEX,
+    NO_CODE_REGEX,
+    SEA_STATE_REGEX,
+    TIDE_REGEX,
+    TIDE_STRONG_REGEX,
+    TIME_HINT_REGEX,
+)
 from server.rag.onepass_core import run_onepass
 from server.tools.rag_onepass_tool import (
     _norm_citation,
@@ -32,92 +43,6 @@ BBOX_KEY_SYNONYMS = {
     "lon1": ("lon1", "east", "right", "maxlon", "lon_max"),
     "lat1": ("lat1", "north", "top", "maxlat", "lat_max"),
 }
-GHRSST_QUERY_KEYWORDS = (
-    "海溫",
-    "水溫",
-    "sea surface temperature",
-    "sea-surface temperature",
-    "sea temperature",
-    "sst",
-)
-TIDE_QUERY_KEYWORDS = (
-    "潮",
-    "潮高",
-    "滿潮",
-    "乾潮",
-    "漲潮",
-    "退潮",
-    "大潮",
-    "小潮",
-    "潮汐",
-    "日出",
-    "日落",
-    "夕陽",
-    "曙光",
-    "月亮",
-    "月出",
-    "月落",
-    "月相",
-    "盈虧",
-    "tide",
-    "high tide",
-    "low tide",
-    "sunrise",
-    "sunset",
-    "moonrise",
-    "moonset",
-    "moon phase",
-    "moon rise",
-    "moon set",
-    "sun rise",
-    "sun set",
-    "tidal",
-    "tidal condition",
-)
-TIDE_ONLY_KEYWORDS = (
-    "潮",
-    "潮高",
-    "滿潮",
-    "乾潮",
-    "漲潮",
-    "退潮",
-    "大潮",
-    "小潮",
-    "潮汐",
-    "潮水",
-    "潮位",
-    "潮況",
-    "海況",
-    "high tide",
-    "low tide",
-    "sea state",
-    "tide condition",
-    "tidal condition",
-)
-TIDE_ONLY_WORDS = ("tide", "tides", "tidal")
-TIDE_QUERY_KEYWORD_PAIRS = (
-    ("moon", "rise"),
-    ("moon", "set"),
-    ("sun", "rise"),
-    ("sun", "set"),
-    ("civil", "twilight"),
-)
-TIDE_PAIR_MAX_GAP = 48
-CODE_REQUEST_KEYWORDS = (
-    "程式",
-    "python",
-    "code",
-    "寫",
-    "繪",
-    "畫",
-    "plot",
-    "腳本",
-    "script",
-    "作圖",
-    "chart",
-    "map",
-    "timeseries"
-)
 FULLWIDTH_MAP = str.maketrans(
     {
         "（": "(",
@@ -137,16 +62,6 @@ BBOX_RE = re.compile(r"\[\s*(-?\d+(?:\.\d+)?)(?:\s*,\s*(-?\d+(?:\.\d+)?)){3}\s*\
 DATE_ISO_RE = re.compile(r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})")
 DATE_SLASH_RE = re.compile(r"(?P<year>\d{4})/(?P<month>\d{1,2})/(?P<day>\d{1,2})")
 DATE_CJK_RE = re.compile(r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日?")
-NEAREST_KEYWORDS = (
-    "今天",
-    "今日",
-    "現在",
-    "目前",
-    "最新",
-    "nearest",
-    "最近",
-    "current",
-)
 DURATION_RE = re.compile(
     r"P?(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?"
 )
@@ -346,7 +261,7 @@ def _should_force_nearest(
     if requested_date == today:
         return True
     lowered = query.lower()
-    return any(keyword in query or keyword in lowered for keyword in NEAREST_KEYWORDS)
+    return bool(TIME_HINT_REGEX.search(lowered))
 
 
 def _is_missing_data_error(message: str) -> bool:
@@ -1102,7 +1017,11 @@ async def _execute_mcp_tool(
                 debug,
             )
         show_tide = _query_requests_tide_details(query)
+        tide_available = bool((result.get("tide") or {}).get("highs") or (result.get("tide") or {}).get("lows"))
         text = _render_tide_text(result, normalized_args, force_zh, show_tide=show_tide)
+        if show_tide and not tide_available:
+            detail = "此點位並無潮汐資料。" if force_zh else "No tide data is available for this location."
+            text = f"{text}\n{detail}" if text else detail
         response = {
             "mode": "mcp_tools",
             "tool": tool,
@@ -1166,9 +1085,29 @@ def _normalize_fullwidth(text: str) -> str:
     return text.translate(FULLWIDTH_MAP)
 
 
+def _contains_no_code_phrase(query: str) -> bool:
+    if not query:
+        return False
+    normalized = _normalize_fullwidth(query).lower()
+    return bool(NO_CODE_REGEX.search(normalized))
+
+
+def _is_sea_state_only_query(query: str) -> bool:
+    if not query:
+        return False
+    normalized = _normalize_fullwidth(query).lower()
+    return bool(SEA_STATE_REGEX.search(normalized))
+
+
 def _contains_code_request(query: str) -> bool:
+    if not query:
+        return False
     lowered = query.lower()
-    return any(term in lowered for term in CODE_REQUEST_KEYWORDS)
+    if NO_CODE_REGEX.search(lowered):
+        return False
+    if CLI_TOOL_REGEX.search(lowered):
+        return False
+    return bool(CODE_REGEX.search(lowered))
 
 
 def _extract_point_from_query(query: str) -> Tuple[float, float] | None:
@@ -1279,10 +1218,16 @@ def _translate_note_text(note: str, force_zh: bool) -> str:
 def _looks_like_ghrsst_query(query: str) -> bool:
     if not query:
         return False
-    normalized = _normalize_fullwidth(query).lower()
-    if not any(keyword in normalized for keyword in GHRSST_QUERY_KEYWORDS):
+    normalized = _normalize_fullwidth(query)
+    lowered = normalized.lower()
+    if not GHRSST_REGEX.search(lowered):
         return False
-    return bool(_extract_point_from_query(query) or _extract_bbox_from_query(query))
+    if _extract_point_from_query(query) or _extract_bbox_from_query(query):
+        return True
+    if GHRSST_GEO_REGEX.search(lowered):
+        return True
+    digits = sum(ch.isdigit() for ch in normalized)
+    return bool(TIME_HINT_REGEX.search(lowered) and digits >= 2)
 
 
 def _infer_ghrsst_decision_from_query(query: str, today: str) -> MCPDecision | None:
@@ -1323,25 +1268,14 @@ def _looks_like_tide_query(query: str) -> bool:
     if not query:
         return False
     normalized = _normalize_fullwidth(query).lower()
-    if any(keyword in normalized for keyword in TIDE_QUERY_KEYWORDS):
-        return True
-    squashed = re.sub(r"\s+", " ", normalized)
-    return any(
-        _contains_keyword_pair(squashed, first, second, TIDE_PAIR_MAX_GAP)
-        for first, second in TIDE_QUERY_KEYWORD_PAIRS
-    )
+    return bool(TIDE_REGEX.search(normalized))
 
 
 def _query_requests_tide_details(query: str) -> bool:
     if not query:
         return False
     normalized = _normalize_fullwidth(query).lower()
-    if any(keyword in normalized for keyword in TIDE_ONLY_KEYWORDS):
-        return True
-    for word in TIDE_ONLY_WORDS:
-        if re.search(rf"\b{re.escape(word)}\b", normalized):
-            return True
-    return False
+    return bool(TIDE_STRONG_REGEX.search(normalized))
 
 
 def _extract_requested_date(query: str) -> str | None:
@@ -1356,27 +1290,6 @@ def _extract_requested_date(query: str) -> str | None:
                 return formatted
     return None
 
-
-def _contains_keyword_pair(text: str, first: str, second: str, max_gap: int) -> bool:
-    first_idx = text.find(first)
-    second_idx = text.find(second)
-    if first_idx == -1 or second_idx == -1:
-        return False
-    if abs(second_idx - first_idx) <= max_gap:
-        return True
-    search_idx = first_idx
-    while search_idx != -1:
-        candidate = text.find(second, search_idx + len(first))
-        if candidate != -1 and (candidate - search_idx) <= max_gap:
-            return True
-        search_idx = text.find(first, search_idx + 1)
-    search_idx = second_idx
-    while search_idx != -1:
-        candidate = text.find(first, search_idx + len(second))
-        if candidate != -1 and (candidate - search_idx) <= max_gap:
-            return True
-        search_idx = text.find(second, search_idx + 1)
-    return False
 
 
 def _infer_tide_decision_from_query(
@@ -1417,6 +1330,9 @@ async def classify_and_route(
     query_time_value = query_time or now_iso_in_tz(tz_value)
     today = today_in_tz(tz_value)
     force_zh = _is_zh_query(query)
+    decision: MCPDecision | None = None
+    decision: MCPDecision | None = None
+
     try:
         raw_result, payload = await _run_onepass_async(
             query,
@@ -1439,6 +1355,15 @@ async def classify_and_route(
 
     mode = (payload.get("mode") or "").strip().lower()
     logger.info("router mode=%s", mode or "<unknown>")
+
+    needs_tide = _looks_like_tide_query(query) and not _contains_code_request(query)
+
+    if _is_sea_state_only_query(query) and not needs_tide:
+        return {
+            "mode": "explain",
+            "text": "目前僅提供海表溫度與潮汐資訊，無法回答「海況/sea state」相關資料。請改以潮汐或海溫為關鍵字重新提問。",
+            "citations": [],
+        }
 
     if mode == "mcp_tools":
         spec = getattr(raw_result, "mcp", None) or payload.get("mcp")
@@ -1475,10 +1400,10 @@ async def classify_and_route(
             force_zh,
         )
 
-    if mode != "code":
+    if needs_tide:
         auto_tide = _infer_tide_decision_from_query(query, tz_value, query_time_value, today)
         if auto_tide:
-            logger.info("router auto-switching to tide.forecast based on query parsing")
+            logger.info("router auto-switching to tide.forecast based on query parsing (mode=%s)", mode or "<unknown>")
             return await _execute_mcp_tool(
                 auto_tide,
                 today,
@@ -1488,7 +1413,8 @@ async def classify_and_route(
                 query_time_value,
                 force_zh,
             )
-    if mode != "code" and _looks_like_ghrsst_query(query):
+    gh_request = _looks_like_ghrsst_query(query) and not _contains_code_request(query)
+    if gh_request:
         auto_decision = _infer_ghrsst_decision_from_query(query, today)
         if auto_decision:
             logger.info("router auto-switching to mcp_tools based on query parsing")

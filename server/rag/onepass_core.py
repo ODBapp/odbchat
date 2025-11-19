@@ -10,15 +10,28 @@ import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
-from server.rag.onepass_prompts import build_continue_prompt, build_main_prompt
-from server.llm_adapter import LLM
-from server.time_utils import now_iso_in_tz, resolve_tz_name, today_in_tz
+from functools import lru_cache
 
 import yaml
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 from sentence_transformers import SentenceTransformer
-from functools import lru_cache
+
+from server.rag.onepass_prompts import build_continue_prompt, build_main_prompt
+from server.llm_adapter import LLM
+from server.time_utils import now_iso_in_tz, resolve_tz_name, today_in_tz
+from server.keyword_sets import (
+    CODE_KEYWORDS,
+    CODE_REGEX,
+    FOLLOWUP_KEYWORDS,
+    GHRSST_GEO_REGEX,
+    GHRSST_REGEX,
+    NO_CODE_REGEX,
+    PLOT_TERM_REGEX,
+    TIME_HINT_REGEX,
+    TIDE_REGEX,
+    CLI_TOOL_REGEX,
+)
 
 _OAS_CACHE: dict[frozenset[str], Dict[str, Any]] = {}
 LAST_PLAN: Optional[Dict[str, Any]] = None
@@ -62,75 +75,6 @@ _qdrant: Optional[QdrantClient] = None
 _ollama: Optional[OllamaClient] = None
 _system_prompt: Optional[str] = None
 _user_prompt_template: Optional[str] = None
-
-CODE_KEYWORDS = (
-    "code",
-    "script",
-    "python",
-    "程式",
-    "程式碼",
-    "寫程式",
-    "示範程式",
-    "程式範例",
-    "繪圖",
-    "plot",
-    "畫圖",
-)
-
-FOLLOWUP_KEYWORDS = (
-    "改",
-    "換",
-    "更新",
-    "修改",
-    "再",
-    "重新",
-    "同樣",
-    "上一",
-    "繼續",
-    "程式碼有錯",
-    "follow",
-    "again",
-    "update",
-    "change",
-    "same",
-    "revise",
-)
-
-GHRSST_KEYWORDS = (
-    "海溫",
-    "水溫",
-    "sst",
-    "sea surface temperature",
-    "sea-surface temperature",
-    "sea temperature",
-    "surface temp",
-)
-TIDE_TOOL_KEYWORDS = (
-    "潮",
-    "滿潮",
-    "乾潮",
-    "漲潮",
-    "退潮",
-    "潮汐",
-    "日出",
-    "日落",
-    "月出",
-    "月落",
-    "月相",
-    "tide",
-    "high tide",
-    "low tide",
-    "sunrise",
-    "sunset",
-    "moonrise",
-    "moonset",
-    "moon phase",
-    "moon rise",
-    "moon set",
-    "sun rise",
-    "sun set",
-)
-GHRSST_GEO_TOKENS = ("lon", "lat", "bbox", "經緯", "座標", "範圍")
 COORD_PAIR_RE = re.compile(r"\(\s*-?\d{1,3}(?:\.\d+)?,\s*-?\d{1,2}(?:\.\d+)?\s*\)")
 BBOX_RE = re.compile(
     r"\[\s*-?\d{1,3}(?:\.\d+)?(?:\s*,\s*-?\d{1,3}(?:\.\d+)?){3,}\s*\]"
@@ -246,7 +190,11 @@ def _wants_code(query: str) -> bool:
     if not query:
         return False
     lowered = query.lower()
-    return any(keyword in lowered for keyword in CODE_KEYWORDS)
+    if NO_CODE_REGEX.search(lowered):
+        return False
+    if CLI_TOOL_REGEX.search(lowered):
+        return False
+    return bool(CODE_REGEX.search(lowered))
 
 
 def _tokenize_for_overlap(text: str) -> set[str]:
@@ -1339,7 +1287,7 @@ def _looks_like_followup(query: str, prev_plan: Optional[Dict[str, Any]]) -> boo
         return True
     params = (prev_plan.get("params") or {}) if isinstance(prev_plan, dict) else {}
     changes = sum(1 for key in params if key and str(key) in query)
-    has_plot_terms = any(term in lowered for term in ("plot", "map", "圖", "畫"))
+    has_plot_terms = bool(PLOT_TERM_REGEX.search(lowered))
     return (changes >= 2) or (changes >= 1 and has_plot_terms)
 
 
@@ -1347,25 +1295,24 @@ def _looks_like_ghrsst_request(query: str) -> bool:
     if not query:
         return False
     lowered = query.lower()
-    has_kw = any(keyword in lowered for keyword in GHRSST_KEYWORDS)
-    if not has_kw:
+    if not GHRSST_REGEX.search(lowered):
         return False
-    has_geo_token = any(token in lowered for token in GHRSST_GEO_TOKENS)
-    has_region = any(
-        region in lowered
-        for region in ("台灣", "外海", "花蓮", "基隆", "澎湖", "東海", "南海", "台東", "taiwan")
-    )
-    has_temporal = any(word in lowered for word in ("今天", "今日", "現在", "current", "today"))
     coord_like = bool(COORD_PAIR_RE.search(query) or BBOX_RE.search(query))
+    if coord_like:
+        return True
+    if GHRSST_GEO_REGEX.search(lowered):
+        return True
     digits = sum(ch.isdigit() for ch in query)
-    return coord_like or has_geo_token or has_region or (has_temporal and digits >= 2)
+    if TIME_HINT_REGEX.search(lowered) and digits >= 2:
+        return True
+    return False
 
 
 def _looks_like_tide_request(query: str) -> bool:
     if not query:
         return False
     lowered = query.lower()
-    return any(keyword in lowered for keyword in TIDE_TOOL_KEYWORDS)
+    return bool(TIDE_REGEX.search(lowered))
 
 
 def _looks_like_unclear_answer(text: str) -> bool:

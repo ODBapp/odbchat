@@ -32,11 +32,11 @@ def _sysrule_classifier() -> str:
     return (
         "MODE classifier:\n"
         "- Decide one token: 'code', 'explain', 'fallback', or 'mcp_tools'.\n"
-        "- Output 'mcp_tools' when the user explicitly wants actual SST numbers (單點或經緯度範圍的海溫) at a particular date or uses words with time connotations such as now, recently, or today, etc.\n"
+        "- Output 'mcp_tools' when the user explicitly wants actual SST numbers (單點或經緯度範圍的海溫) or tidal conditions at a particular date or uses words with time connotations such as now, recently, or today, etc.\n"
         "- If the question contains negative phrases like '不要程式', '不用 API', '除了程式以外', to ask for explanations, methods or tools but exclude using code, treat it as 'explain'.\n"
-        "- Output 'code' when the user explicitly requests a script/programmatic step (e.g., '寫程式', '如何用程式…', 'Python code', 'API 範例', '畫圖程式') OR the request can be fulfilled only through coding (e.g., plotting map/分佈地圖, 時序分析) OR clearly references modifying/continuing the previous code (phrases like '改變/畫', '更新/換', '再試一次', '上一個結果加上…', explicit parameter changes, etc.). If details (bbox/date) are missing, still choose MODE=code and make reasonable assumptions in the plan.\n"
-        "- If the user asks how to use a GUI/CLI tool (e.g., Hidy Viewer, ODBchat CLI) without requesting new code, treat it as 'explain' even if the question includes verbs like '畫' or '繪製'.\n"
-        "- Output 'explain' for questions that ask to 描述/定義/比較/列舉/查詢資訊、GUI/工具/平台、資料來源、可視化需求等。\n"
+        "- If the user asks how to use a GUI/CLI tool (e.g., Hidy Viewer, ODBchat CLI) without requesting new code, treat it as 'explain'.\n"
+        "- Output 'explain' for questions that ask to 描述/定義/比較/列舉/探索資訊、GUI/工具/平台、資料來源、可視化需求等。\n"
+        "- Output 'code' when the user explicitly requests a script/programmatic step (e.g., '寫程式', '如何用程式…', 'Python code', 'API 範例', '畫圖', '時序圖/分析') OR clearly references modifying/continuing the previous code (phrases like '改變/畫', '更新/換', '再試一次', '上一個結果加上…', explicit parameter changes, etc.). If details (bbox/date) are missing, still choose MODE=code and make reasonable assumptions in the plan.\n"
         "- Output 'fallback' when the input is nonsense/typo, pure pleasantry (e.g., '謝謝', 'bye'), or otherwise lacks a clear technical request. Fallback replies should be short clarifications with no citations.\n"
         "- When uncertain between code or explain, prefer 'explain'.\n"
     )
@@ -59,7 +59,7 @@ def _sysrule_planner(oas_info: Dict[str, Any]) -> str:
         "- When the user omits spatial/temporal details, infer a sensible bbox/time window (document it in PLAN) instead of asking follow-up questions.\n"
         "CSV / JSON selection:\n"
         "- Prefer JSON if the user didn't explicitly ask CSV/file download.\n"
-        "- For CSV: choose '/csv' endpoint if present; otherwise ONLY if 'format' enum includes 'csv', set format='csv'.\n\n"
+        "- For CSV (only when user requests to CSV/file download): choose '/csv' endpoint if present; otherwise ONLY if 'format' enum includes 'csv', set format='csv'.\n\n"
         "Spatial-related params guidance:\n"
         "- If region/place implied, estimate a relevant bbox or lon/lat (use ONLY whitelisted names like lon0,lon1,lat0,lat1 or lon,lat).\n"
         "- Never global extent by default.\n"
@@ -130,6 +130,7 @@ def _sysrule_explain(force_zh: bool) -> str:
         "You are an ODB assistant. Provide a concise explanation that answers the question.\n"
         + lang +
         "- Use ONLY provided notes for specific resources; no code.\n"
+        "- Do NOT include Python or any code fences when MODE=explain; respond with plain sentences/bullets only.\n"
         "- When the question asks about GUI/非程式工具, explicitly mention every relevant interactive option found in the notes (e.g., Hidy Viewer, ODBchat CLI) with a short description and URL. Never claim a tool is unavailable if the notes describe one.\n"
         "- Keep it short but complete.\n"
     )

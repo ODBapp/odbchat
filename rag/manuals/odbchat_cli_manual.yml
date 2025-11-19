@@ -166,23 +166,7 @@ content: |
   
   ---
   
-  ### 9. RAG 知識庫建議切片
-  
-  為了讓助理能「引導使用者組指令」，建議將下列片段納入向量索引：
-  
-  - **命令模板**：
-    - 時序：`/mhw --bbox <…> --fields sst,sst_anomaly --plot series --plot-field sst,sst_anomaly [--periods "..."]`
-    - 地圖：`/mhw --bbox <…> --fields <field> --plot map --plot-field <field> --start YYYY-MM [--map-method ...]`
-  - **參數對照表**與 **範例解說**
-  - **bbox 判斷邏輯** 與 `bbox_mode` 傳遞（跨 0° / 反子午線）
-  - **level 色盤與圖例規則**
-  - **常見錯誤排除**（見下節）
-  
-  > 產生 `mhw_cli_guides.yml`：在本 README 最上方加上 YAML front‑matter（`--- ... ---`），再以你慣用的切片工具製作。建議以章節作段落切分（H2/H3）。
-  
-  ---
-  
-  ### 10. 常見錯誤與排除
+  ### 9. 常見錯誤與排除
   
   - **`pcolormesh are not monotonically increasing` 警告（plain+反子午線）**  
     代表 X 未單調。新版 `map_plot.py` 會在重心旋轉後 **排序欄位並同步重排 Z**，請確認已更新。
@@ -195,7 +179,7 @@ content: |
   
   ---
   
-  ### 11. 參考色標與單位
+  ### 10. 參考色標與單位
   
   - `sst`（°C），`sst_anomaly`（°C，預設色盤 `coolwarm`）  
   - `level`：1..4（Moderate/Strong/Severe/Extreme）  
