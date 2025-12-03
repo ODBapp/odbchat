@@ -73,3 +73,8 @@
 #### v0.3.7 Centralized keyword detection (server/keyword_sets.py) and use REGEX cues for keyword lists.
     - Fixed tide-specific regex cues so English prompts like “tidal condition” or “tides at (x,y)” correctly trigger detailed tide summaries (instead of sun/moon-only fallbacks); updated router tests ensure `tide.forecast` handles N/E coordinate tokens and future-date summaries reliably.
     - Bumped MCP schemas to v0.3.7, documented router/metocean behavior in `specs/odbchat_spec_v0_3_7.md` and `specs/odbchat_mcp_tools_metocean_integration_spec_v0_3_7.md`, and added schema coverage for `router.answer`.
+
+#### v0.3.8 odbViz integration + antimeridian fixes
+    - Add passive viewer bridge: odbchat CLI now runs a WS bridge so an external odbViz registers and advertises capabilities; `/mhw` plots first try the attached viewer, then fall back to legacy map_plot/mhw_plot if absent.
+    - Preserve original bbox (including antimeridian) when routing `/mhw` plots to odbViz, remove row limits for map plots, and forward engine/cmap/vmin/vmax styling.
+    - Enable `/view` commands in CLI (open/preview/plot/export/list_vars) and fix CSV exports and dataset reuse; address bbox filtering so antimeridian datasets don’t get filtered out.

@@ -23,13 +23,7 @@ CODE_KEYWORDS = (
     "寫程式",
     "示範程式",
     "程式範例",
-    "繪圖",
-    "plot",
-    "畫圖",
-    "畫出",
-    "製圖",
     "chart",
-    "map",
     "timeseries",
     "time series",
 )
@@ -57,6 +51,16 @@ FOLLOWUP_KEYWORDS = (
 )
 
 PLOT_TERM_REGEX = _regex((r"plot", r"map", r"圖", r"畫", r"繪圖", r"製圖"))
+
+# Direct-plot trigger phrases (to avoid ambiguous generic plot terms)
+DIRECT_PLOT_REGEX = _regex(
+    (
+        r"直接出圖",
+        r"直接畫圖",
+        r"create\s+plot",
+        r"direct\s+plot",
+    )
+)
 
 # CLI/GUI tool mentions that should bias toward explain mode
 CLI_TOOL_REGEX = _regex(

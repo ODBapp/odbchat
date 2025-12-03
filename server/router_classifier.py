@@ -18,6 +18,7 @@ from server.api.metocean_mcp_proxy import _tide_forecast
 from server.keyword_sets import (
     CLI_TOOL_REGEX,
     CODE_REGEX,
+    DIRECT_PLOT_REGEX,
     GHRSST_GEO_REGEX,
     GHRSST_REGEX,
     NO_CODE_REGEX,
@@ -1110,6 +1111,68 @@ def _contains_code_request(query: str) -> bool:
     return bool(CODE_REGEX.search(lowered))
 
 
+def _maybe_infer_plot_request(query: str, today: date) -> Dict[str, Any] | None:
+    """
+    Detect direct plot requests (e.g., '直接出圖', 'create plot') and synthesize
+    a minimal plan.plot_request payload for /mhw map.
+    """
+    if not query:
+        return None
+    normalized = _normalize_fullwidth(query).lower()
+    if not DIRECT_PLOT_REGEX.search(normalized):
+        return None
+    if _contains_code_request(query):
+        return None
+    # extract dates (start/end) and bbox/point if present
+    dates: list[str] = []
+    for regex in (DATE_CJK_RE, DATE_SLASH_RE, DATE_ISO_RE):
+        for m in regex.finditer(query):
+            formatted = _format_date_parts(m.group("year"), m.group("month"), m.group("day"))
+            if formatted:
+                dates.append(formatted)
+    if not dates:
+        one = _normalize_date_string(query)
+        if one:
+            dates.append(one)
+    start = dates[0] if dates else today.isoformat()
+    end = dates[1] if len(dates) > 1 else start
+    bbox_vals = _extract_bbox_from_query(query)
+    if not bbox_vals:
+        pt = _extract_point_from_query(query)
+        if pt:
+            lon, lat = pt
+            bbox_vals = [lon, lat, lon, lat]
+    if not bbox_vals:
+        # heuristic: if query mentions Taiwan, fall back to a Taiwan box
+        if "台灣" in normalized or "taiwan" in normalized:
+            bbox_vals = [118, 21, 123, 26]
+        else:
+            return None
+    bbox_str = ",".join(str(x) for x in bbox_vals)
+    # detect intent
+    series = bool(re.search(r"(timeseries|time\\s*series|時序|序列|series)", normalized))
+    profile = bool(re.search(r"(profile|剖面)", normalized))
+    kind_flag = "series" if series or len(dates) > 1 else "map"
+    anomaly = bool(re.search(r"(anomaly|距平|異常)", normalized))
+    plot_field = "sst_anomaly" if anomaly else "sst"
+    plot_flag = "series" if kind_flag == "series" else "map"
+    if profile:
+        ds_key = "ds1"
+        cli_cmd = (
+            f"/mhw --bbox {bbox_str} --start {start} --end {end} as {ds_key}\n"
+            f"/view plot {ds_key} profile --x lon --y {plot_field} --agg mean --order lon:asc"
+        )
+        kind_out = "mhw.profile"
+    else:
+        cli_cmd = f"/mhw --bbox {bbox_str} --start {start} --end {end} --plot {plot_flag} --plot-field {plot_field}"
+        kind_out = f"mhw.{kind_flag}"
+    return {
+        "kind": kind_out,
+        "cli_command": cli_cmd,
+        "notes": f"auto-detected direct plot request from query: {query}",
+    }
+
+
 def _extract_point_from_query(query: str) -> Tuple[float, float] | None:
     normalized = _normalize_fullwidth(query)
     match = PAIR_RE.search(normalized)
@@ -1233,11 +1296,12 @@ def _looks_like_ghrsst_query(query: str) -> bool:
 def _infer_ghrsst_decision_from_query(query: str, today: str) -> MCPDecision | None:
     if _contains_code_request(query):
         return None
+    requested_date = _normalize_date_string(query) or today
     bbox = _extract_bbox_from_query(query)
     if bbox:
         arguments = {
             "bbox": bbox,
-            "date": today,
+            "date": requested_date,
             "fields": DEFAULT_FIELDS,
             "method": "nearest",
         }
@@ -1252,7 +1316,7 @@ def _infer_ghrsst_decision_from_query(query: str, today: str) -> MCPDecision | N
         arguments = {
             "longitude": lon,
             "latitude": lat,
-            "date": today,
+            "date": requested_date,
             "fields": DEFAULT_FIELDS,
             "method": "nearest",
         }
@@ -1365,6 +1429,16 @@ async def classify_and_route(
             "citations": [],
         }
 
+    # Direct plot intents → synthesize plot_request plan for CLI auto-plot
+    inferred_plot = _maybe_infer_plot_request(query, today)
+    if inferred_plot:
+        return {
+            "mode": "plot_request",
+            "text": "已為你準備繪圖指令，直接繪製指定區域的海溫圖。",
+            "plan": {"plot_request": inferred_plot},
+            "citations": [],
+        }
+
     if mode == "mcp_tools":
         spec = getattr(raw_result, "mcp", None) or payload.get("mcp")
         decision = _decision_from_spec(spec)
@@ -1427,6 +1501,17 @@ async def classify_and_route(
                 query_time_value,
                 force_zh,
             )
+
+    # Guard against spurious code mode: if mode==code but query looks like an unrecognized command or lacks code intent, prefer fallback
+    if mode == "code":
+        stripped = query.strip().lower()
+        looks_like_command = stripped.startswith("/") or stripped.startswith("view ")
+        if looks_like_command or not _contains_code_request(query):
+            return {
+                "mode": "fallback",
+                "text": "這個請求目前無法直接執行，請再具體說明想要的資料或指令格式。",
+                "citations": [],
+            }
 
     return payload
 

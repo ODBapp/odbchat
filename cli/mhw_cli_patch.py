@@ -9,6 +9,13 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from shared.schemas import canonicalize_fetch, validate_fetch, canonicalize_plot, validate_plot
+from .viewer_client import (
+    BaseViewer,
+    PluginUnavailableError,
+    PluginMessageError,
+    display_plot_window,
+    PlotResult,
+)
 
 
 MHW_HELP = (
@@ -189,6 +196,111 @@ def _plot_map(df, field, bbox, start, **kw):
         return
     fn(df, field=field, bbox=bbox, start=start, **kw)
 
+# ------------------------------ viewer path ------------------------------
+
+async def _plot_with_viewer(
+    cli,
+    df: pd.DataFrame,
+    plot_cfg: Dict[str, Any],
+    *,
+    bbox_mode: str,
+    dataset_key: str,
+    bbox_orig: Optional[Tuple[float, float, float, float]] = None,
+) -> bool:
+    """
+    Try plotting via an attached viewer on cli.viewer; returns True on success, False otherwise.
+    """
+    viewer = getattr(cli, "viewer", None)
+    caps = getattr(cli, "viewer_caps", {}) if hasattr(cli, "viewer_caps") else {}
+    if viewer is None or not isinstance(viewer, BaseViewer) or not caps.get("plot", True):
+        return False
+
+    df_for_view = df.copy()
+    for col in df_for_view.columns:
+        try:
+            if pd.api.types.is_datetime64_any_dtype(df_for_view[col]):
+                df_for_view[col] = pd.to_datetime(df_for_view[col]).dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    records = df_for_view.to_dict(orient="records")
+    payload = {
+        "datasetKey": dataset_key,
+        "source": "mhw",
+        "schema": {"timeField": "date", "lonField": "lon", "latField": "lat"},
+        "records": records,
+    }
+    try:
+        await viewer.open_records(payload)
+    except (PluginUnavailableError, PluginMessageError) as exc:
+        print(f"[view] odbViz not available: {exc}", file=sys.stderr)
+        return False
+    except Exception as exc:
+        print(f"[view] failed to open records: {exc}", file=sys.stderr)
+        return False
+
+    kind = plot_cfg.get("mode")
+    if kind == "series":
+        kind = "timeseries"
+    elif kind == "month":
+        kind = "climatology"
+    elif kind == "map":
+        kind = "map"
+    viewer_payload: Dict[str, Any] = {
+        "datasetKey": dataset_key,
+        "kind": kind,
+        "y": plot_cfg.get("field") or (plot_cfg.get("fields") or [None])[0],
+        "source": "mhw",
+        "style": {},
+        "params": {"gridded": kind == "map", "bboxMode": bbox_mode},
+    }
+    # Pass original bbox when available so viewer can set correct extent for antimeridian cases
+    try:
+        if bbox_orig is not None and all(v is not None for v in bbox_orig):
+            b0, b1, b2, b3 = bbox_orig
+            viewer_payload["bbox"] = [float(b0), float(b1), float(b2), float(b3)]
+    except Exception:
+        pass
+    engine = plot_cfg.get("map_method") or plot_cfg.get("engine")
+    if not engine and kind == "map":
+        caps_eng = (caps.get("engine") if isinstance(caps, dict) else None) or []
+        for cand in ["basemap", "cartopy", "plain"]:
+            if cand in caps_eng:
+                engine = cand
+                break
+    if engine:
+        viewer_payload["engine"] = engine
+    style = viewer_payload["style"]
+    if plot_cfg.get("cmap") is not None:
+        style["cmap"] = plot_cfg["cmap"]
+    if plot_cfg.get("vmin") is not None:
+        style["vmin"] = plot_cfg["vmin"]
+    if plot_cfg.get("vmax") is not None:
+        style["vmax"] = plot_cfg["vmax"]
+
+    result = PlotResult(header={}, png=b"")
+
+    async def _on_header(header: Dict[str, Any]) -> None:
+        result.header = header
+
+    async def _on_binary(data: bytes) -> None:
+        result.png = data
+
+    try:
+        await viewer.plot(viewer_payload, on_header=_on_header, on_binary=_on_binary)
+    except (PluginUnavailableError, PluginMessageError) as exc:
+        print(f"[view] plot failed via odbViz: {exc}", file=sys.stderr)
+        return False
+    except Exception as exc:
+        print(f"[view] plot failed via odbViz: {exc}", file=sys.stderr)
+        return False
+
+    if not result.png:
+        print("[view] plot produced no image", file=sys.stderr)
+        return False
+    tmp_path = display_plot_window(result.png, filename_hint="plot.png")
+    print(f"🖼️  Plot ready → {tmp_path}")
+    return True
+
 # ------------------------------ MCP call ------------------------------
 
 async def _mcp_call(cli, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -230,7 +342,7 @@ def _parse_mhw_flags(tokens: List[str]) -> Dict[str, Any]:
     p: Dict[str, Any] = {
         "lon0": None, "lat0": None, "lon1": None, "lat1": None,
         "start": None, "end": None,
-        "_fields": None, "_plot": None, "_plot_field": None,
+        "_fields": None, "_plot": None, "_plot_field": None, "_dataset_key": None,
         "_periods": None, "_outfile": None, "_map_method": None,
         "_cmap": None, "_vmin": None, "_vmax": None, "_csv": False, "_raw": False,
     }
@@ -263,6 +375,9 @@ def _parse_mhw_flags(tokens: List[str]) -> Dict[str, Any]:
             i += 2; continue
         if t == "--csv": p["_csv"] = True; i += 1; continue
         if t == "--raw": p["_raw"] = True; i += 1; continue
+        if t == "as" and i + 1 < len(tokens):
+            p["_dataset_key"] = _strip_q(tokens[i + 1])
+            i += 2; continue
         i += 1
     return p
 
@@ -383,6 +498,7 @@ async def handle_mhw(cli, line: str):
         print(big.head().to_string(index=False)); return
 
     mode = (p.get("_plot") or "").lower()
+    dataset_key = p.get("_dataset_key") or "_mhw_tmp"
 
     plot_cfg = {"mode": mode}
     if mode == "series":
@@ -397,15 +513,62 @@ async def handle_mhw(cli, line: str):
         if p.get("_vmin") is not None: plot_cfg["vmin"] = p["_vmin"]
         if p.get("_vmax") is not None: plot_cfg["vmax"] = p["_vmax"]
 
-    plot_cfg = canonicalize_plot(plot_cfg)
-    ok, err = validate_plot(plot_cfg)
-    if not ok:
-        print(f"❌ invalid plot config: {err}", file=sys.stderr)
-        return
+    if mode:
+        plot_cfg = canonicalize_plot(plot_cfg)
+        ok, err = validate_plot(plot_cfg)
+        if not ok:
+            print(f"❌ invalid plot config: {err}", file=sys.stderr)
+            return
 
+    # Try viewer first if a plot mode was requested
+    if mode in {"series", "month", "map"}:
+        # Important: keep the bbox_mode derived from the *original* user bbox.
+        # Do not override with a split chunk (which would lose antimeridian info).
+        bbox_mode_local = bboxMode
+        bbox_orig: Optional[Tuple[float, float, float, float]] = None
+        try:
+            if all(p.get(k) is not None for k in ("lon0", "lat0", "lon1", "lat1")):
+                bbox_orig = (
+                    float(p["lon0"]),
+                    float(p["lat0"]),
+                    float(p["lon1"]),
+                    float(p["lat1"]),
+                )
+        except Exception:
+            bbox_orig = None
+        used_view = False
+        try:
+            used_view = await _plot_with_viewer(
+                cli,
+                big,
+                plot_cfg,
+                bbox_mode=bbox_mode_local,
+                dataset_key=dataset_key,
+                bbox_orig=bbox_orig,
+            )
+        except Exception as exc:
+            print(f"[view] odbViz plot error: {exc}", file=sys.stderr)
+            used_view = False
+        if used_view:
+            try:
+                if hasattr(cli, "datasets"):
+                    cli.datasets[dataset_key] = big
+            except Exception:
+                pass
+            return
+
+    # store dataset for later /view usage when 'as <key>' is provided
+    if dataset_key and hasattr(cli, "datasets"):
+        try:
+            cli.datasets[dataset_key] = big
+        except Exception:
+            pass
+
+    # Fallback to legacy plugins
     if mode == "series":
         fields = [f.strip() for f in (p.get("_plot_field") or arglist[0]["append"]).split(",") if f.strip() in ALLOWED_FIELDS]
-        if not fields: fields = ["sst", "sst_anomaly"]
+        if not fields:
+            fields = ["sst", "sst_anomaly"]
         _plot_series(big, fields=fields, outfile=p.get("_outfile"))
         return
 
@@ -419,9 +582,18 @@ async def handle_mhw(cli, line: str):
         first = arglist[0]
         bbox = (first["lon0"], first["lat0"], first.get("lon1"), first.get("lat1"))
         start_for_map = first["start"]
-        _plot_map(big, field=fld, bbox=bbox, start=start_for_map, bbox_mode=bboxMode,
-                  outfile=p.get("_outfile"), method=p.get("_map_method"),
-                  cmap=p.get("_cmap"), vmin=p.get("_vmin"), vmax=p.get("_vmax"))
+        _plot_map(
+            big,
+            field=fld,
+            bbox=bbox,
+            start=start_for_map,
+            bbox_mode=bboxMode,
+            outfile=p.get("_outfile"),
+            method=p.get("_map_method"),
+            cmap=p.get("_cmap"),
+            vmin=p.get("_vmin"),
+            vmax=p.get("_vmax"),
+        )
         return
 
     return
@@ -443,4 +615,3 @@ def patch_mhw_command(cli) -> None:
 # pluggable register
 def install_mhw_command(cli):
     cli.register_command("/mhw", handle_mhw, help_text=MHW_HELP)
-

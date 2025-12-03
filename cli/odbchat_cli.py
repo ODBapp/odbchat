@@ -40,6 +40,7 @@ try:
     from zoneinfo import ZoneInfo  # type: ignore
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
+import websockets
 from fastmcp import Client
 try:  # Optional; improves line editing on POSIX systems
     import readline  # type: ignore
@@ -50,6 +51,7 @@ try:
     from ollama import AsyncClient as OllamaAsyncClient  # for streaming
 except Exception:  # pragma: no cover
     OllamaAsyncClient = None
+from .viewer_client import AttachedViewer, BaseViewer, PluginMessageError
 
 DEFAULT_SERVER_URL = "http://localhost:8045/mcp/"
 DEFAULT_MODEL = "gemma3:4b"
@@ -71,6 +73,17 @@ class ODBChatClient:
         self.server_provider = "unknown"
         self.server_model = default_model
         self.default_tz = os.getenv("ODBCHAT_TZ", "Asia/Taipei")
+        # viewer bridge
+        self.viewer = None
+        self.viewer_caps: Dict[str, Any] = {}
+        self._viewer_ws = None
+        self._viewer_pending: Dict[str, Dict[str, Any]] = {}
+        self._viewer_server: Optional[asyncio.AbstractServer] = None
+        self.viewer_port = int(os.getenv("ODBCHAT_VIEW_PORT", "8765"))
+        self.viewer_token = os.getenv("ODBCHAT_VIEW_TOKEN", "")
+        self._viewer_server_task: Optional[asyncio.Task] = None
+        self._interactive_mode = False
+        self.datasets: Dict[str, Any] = {}
 
     # ----------------------
     # Connection management
@@ -85,6 +98,11 @@ class ODBChatClient:
             # fetch server-side model info right after connect
             info = await self._fetch_server_model_info()
             print(f"You ({info.get('provider','unknown')}:{info.get('model', self.current_model)} @ {self.temperature})")
+            try:
+                await self._start_viewer_server()
+            except Exception as exc:
+                if self.debug:
+                    print(f"[view] failed to start viewer server: {exc}")
             return True
         except Exception as e:  # pragma: no cover
             print(f"❌ Failed to connect to server: {e}")
@@ -98,7 +116,103 @@ class ODBChatClient:
                 await self.client.__aexit__(None, None, None)
             finally:
                 self.client = None
+        if self._viewer_server:
+            self._viewer_server.close()
+            try:
+                await self._viewer_server.wait_closed()
+            except Exception:
+                pass
+            self._viewer_server = None
+        if self._viewer_server_task:
+            self._viewer_server_task.cancel()
+            self._viewer_server_task = None
+        if self._viewer_ws:
+            try:
+                await self._viewer_ws.close()
+            except Exception:
+                pass
+            self._viewer_ws = None
+            self.viewer = None
+            self.viewer_caps = {}
+        self._viewer_pending.clear()
 
+    # ----------------------
+    # Viewer bridge
+    # ----------------------
+    async def _start_viewer_server(self):
+        async def handler(websocket, path=None):
+            try:
+                await self._viewer_ws_handler(websocket)
+            except Exception as exc:  # pragma: no cover - runtime
+                if self.debug:
+                    print(f"[view] viewer handler error: {exc}")
+
+        self._viewer_server = await websockets.serve(handler, "127.0.0.1", self.viewer_port)
+        if self.debug:
+            print(f"[view] viewer bridge listening on ws://127.0.0.1:{self.viewer_port}")
+
+    async def _viewer_ws_handler(self, websocket):
+        # First message must be plugin.register
+        try:
+            msg = await websocket.recv()
+            obj = json.loads(msg)
+        except Exception as exc:
+            if self.debug:
+                print(f"[view] bad handshake: {exc}")
+            return
+        if obj.get("type") != "plugin.register":
+            return
+        token = obj.get("token", "")
+        if self.viewer_token and token != self.viewer_token:
+            await websocket.send(json.dumps({"type": "plugin.register_err", "code": "UNAUTHORIZED"}))
+            return
+        caps = obj.get("capabilities") or {}
+        self._viewer_ws = websocket
+        self.viewer = AttachedViewer(websocket, caps)
+        self.viewer_caps = caps
+        await websocket.send(json.dumps({
+            "type": "plugin.register_ok",
+            "pluginProtocolVersion": obj.get("pluginProtocolVersion", "1.0"),
+            "capabilities": caps,
+        }))
+        print(f"[view] viewer ready; capabilities = {caps}")
+        self._reprompt()
+        try:
+            await self._viewer_reader(websocket)
+        finally:
+            if self._viewer_ws is websocket:
+                self._viewer_ws = None
+                self.viewer = None
+                self.viewer_caps = {}
+                self._viewer_pending.clear()
+                print("[view] viewer disconnected; cleared state")
+                self._reprompt()
+
+    async def _viewer_reader(self, websocket):
+        while True:
+            try:
+                msg = await websocket.recv()
+            except Exception:
+                break
+            if isinstance(msg, bytes):
+                viewer = self.viewer
+                if isinstance(viewer, AttachedViewer):
+                    try:
+                        await viewer.handle_binary(msg)
+                    except Exception:
+                        pass
+                continue
+            try:
+                obj = json.loads(msg)
+            except Exception:
+                continue
+            viewer = self.viewer
+            if isinstance(viewer, AttachedViewer):
+                try:
+                    await viewer.handle_message(obj)
+                except Exception:
+                    if self.debug:
+                        print(f"[view] failed to handle viewer message: {obj}")
     # ----------------------
     # Tool helpers
     # ----------------------
@@ -302,7 +416,10 @@ class ODBChatClient:
                     payload["debug"] = True
                 result = await self.client.call_tool("router.answer", payload)
                 data = self._extract_json(result)
-                return self._render_onepass_result(data)
+                rendered = self._render_onepass_result(data)
+                if isinstance(data, dict):
+                    await self._maybe_run_plot_request(data)
+                return rendered
             except Exception as exc:
                 print(f"\n⚠️  MCP tool fallback triggered ({exc}). Trying local streaming…")
 
@@ -348,6 +465,7 @@ class ODBChatClient:
     # ----------------------
     async def interactive_chat(self):
         print(f"\n🗣️  Starting ODBChat CLI")
+        self._interactive_mode = True
         # show server-side model at REPL entrance
         try:
             info = await self._fetch_server_model_info()
@@ -361,7 +479,8 @@ class ODBChatClient:
         while True:
             try:
                 prompt_label = self._model_prompt_label()
-                user_input = self._read_user_message(prompt_label).strip()
+                loop = asyncio.get_event_loop()
+                user_input = (await loop.run_in_executor(None, self._read_user_message, prompt_label)).strip()
                 if not user_input:
                     continue
                 if user_input.lower() in {"/quit", "/exit", "q", "quit", "exit"}:
@@ -388,7 +507,7 @@ class ODBChatClient:
                 response = await self.chat(user_input, None, context)
                 # maintain short rolling context (tail only)
                 if response:
-                    snippet = response[-200:]
+                    snippet = str(response)[-200:]
                     context = (context + "\n" if context else "") + f"User: {user_input}\nAssistant: {snippet}"
                     if len(context) > 1000:
                         context = context[-800:]
@@ -398,6 +517,7 @@ class ODBChatClient:
                 break
             except Exception as e:  # pragma: no cover
                 print(f"\n❌ Error: {e}")
+        self._interactive_mode = False
 
     # ----------------------
     # Minimal line editor with conditional Up/Down for slash-commands
@@ -1086,6 +1206,31 @@ class ODBChatClient:
 
         return "\n".join(output_parts)
 
+    async def _maybe_run_plot_request(self, data: Dict[str, Any]) -> None:
+        plan = data.get("plan")
+        if not isinstance(plan, dict):
+            return
+        pr = plan.get("plot_request")
+        if not isinstance(pr, dict):
+            return
+        cli_cmd = pr.get("cli_command")
+        if not cli_cmd:
+            return
+        autoplot_env = os.getenv("ODBCHAT_AUTOPLOT", "1").lower()
+        autoplot = autoplot_env not in ("0", "false", "no")
+        if not autoplot:
+            print(f"\nSuggested plot command:\n  {cli_cmd}")
+            return
+        cmds = [c.strip() for c in cli_cmd.splitlines() if c.strip()]
+        for idx, one in enumerate(cmds, 1):
+            prefix = f"[view] executing suggested plot ({idx}/{len(cmds)}): {one}"
+            print(f"\n{prefix}")
+            try:
+                await self._handle_command(one)
+            except Exception as exc:
+                print(f"[view] plot request failed: {exc}")
+                break
+
     def _help_text(self) -> str:
         return (
             "\n📖 Commands:\n"
@@ -1102,6 +1247,16 @@ class ODBChatClient:
             "  /help                     Show this help\n"
             "  /quit | /exit | q         Exit\n"
         )
+
+    def _reprompt(self) -> None:
+        try:
+            if not self._interactive_mode:
+                return
+            prompt_label = self._model_prompt_label()
+            sys.stdout.write(f"🧑 You ({prompt_label} @ {self.temperature}): ")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 async def main():
@@ -1139,7 +1294,9 @@ async def main():
                 sys.path.insert(0, project_root)
             print("You current at: ", project_root)                
             from cli.mhw_cli_patch import install_mhw_command
+            from cli.view_cli import install_view_command
             install_mhw_command(cli)
+            install_view_command(cli)
         except Exception:
             print("Warning: cannot load MHW CLI plugin")
             pass
