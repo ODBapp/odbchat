@@ -338,6 +338,38 @@ async def test_router_auto_tide_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_router_wave_query_routes_to_tide(monkeypatch):
+    async def fake_onepass(query, debug, today, tz, query_time):
+        return DummyResult(mode="explain", text="N/A"), {"mode": "explain", "text": "N/A", "citations": []}
+
+    async def fake_tide(**kwargs):
+        return {
+            "date": "2025-01-10",
+            "tz": TEST_TZ,
+            "state_now": "falling",
+            "last_extreme": {"type": "high", "time": "2025-01-10T02:00:00+08:00"},
+            "next_extreme": {"type": "low", "time": "2025-01-10T08:00:00+08:00"},
+            "since_extreme": "PT2H",
+            "until_extreme": "PT1H",
+            "sun": {},
+            "moon": {},
+            "meta": {},
+        }
+
+    monkeypatch.setattr(router, "_run_onepass_async", fake_onepass)
+    monkeypatch.setattr(router, "_tide_forecast", fake_tide)
+
+    result = await router.classify_and_route(
+        "今天基隆嶼(121.7956, 21.9150)浪況",
+        tz=TEST_TZ,
+        query_time=TEST_QUERY_TIME,
+        debug=False,
+    )
+
+    assert result["tool"] == "tide.forecast"
+
+
+@pytest.mark.asyncio
 async def test_router_tide_forecast_english(monkeypatch):
     sample_spec = {
         "tool": "tide.forecast",

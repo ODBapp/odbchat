@@ -78,3 +78,9 @@
     - Add passive viewer bridge: odbchat CLI now runs a WS bridge so an external odbViz registers and advertises capabilities; `/mhw` plots first try the attached viewer, then fall back to legacy map_plot/mhw_plot if absent.
     - Preserve original bbox (including antimeridian) when routing `/mhw` plots to odbViz, remove row limits for map plots, and forward engine/cmap/vmin/vmax styling.
     - Enable `/view` commands in CLI (open/preview/plot/export/list_vars) and fix CSV exports and dataset reuse; address bbox filtering so antimeridian datasets don’t get filtered out.
+
+#### v0.3.9 Add Omnipipe JSON ingestion + retrieval switching
+    - Added `ingest/ingest_json.py` for Omnipipe artifact JSON ingestion with dry-run support.
+    - Added OnePass collection switching via `ODB_ONEPASS_SOURCE` and optional link expansion for Omnipipe graph links.
+    - Promoted Omnipipe metadata into Qdrant payloads, improved table/image retrieval, and added diagnostics/tests.
+    - Hardened MCP reconnect and viewer bridge stability; refined citation labels for user-facing sources.

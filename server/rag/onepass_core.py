@@ -56,9 +56,17 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "thenlper/gte-small")
 EMBED_DEVICE = os.environ.get("EMBED_DEVICE", "cpu")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("ONEPASS_MODEL", os.environ.get("OLLAMA_MODEL", "gemma3:12b"))
-DEFAULT_COLLECTIONS = [c.strip() for c in os.environ.get("ODB_ACTIVE_COLLECTIONS", "mhw").split(",") if c.strip()]
-if not DEFAULT_COLLECTIONS:
-    DEFAULT_COLLECTIONS = ["mhw"]
+def get_active_collections() -> List[str]:
+    source = os.environ.get("ODB_ONEPASS_SOURCE", "yaml").lower()
+    if source == "omnipipe":
+        collections = [
+            c.strip() for c in os.environ.get("OMNIPIPE_COLLECTIONS", "omnipipe_default").split(",") if c.strip()
+        ]
+        return collections or ["omnipipe_default"]
+    collections = [c.strip() for c in os.environ.get("ODB_ACTIVE_COLLECTIONS", "mhw").split(",") if c.strip()]
+    return collections or ["mhw"]
+
+
 
 NOTES_MAX_CHARS = int(os.environ.get("ONEPASS_NOTES_MAX_CHARS", "1600"))
 NOTES_MAX_DOCS = int(os.environ.get("ONEPASS_NOTES_MAX_DOCS", "4"))
@@ -205,6 +213,167 @@ def _tokenize_for_overlap(text: str) -> set[str]:
     return tokens
 
 
+def _score_bonus_from_payload(payload: Dict[str, Any], query: str) -> float:
+    if not payload or not query:
+        return 0.0
+    strong_tokens = set(re.findall(r"[a-z0-9_]{2,}", query.lower()))
+    tokens = strong_tokens or _tokenize_for_overlap(query)
+    if not tokens:
+        return 0.0
+    fields = []
+    for key in ("title", "dataset_name", "doc_type", "source_file", "caption", "table_label"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            fields.append(val)
+    tags = payload.get("tags")
+    if isinstance(tags, list):
+        fields.extend(str(t) for t in tags if t)
+    text = " ".join(fields)
+    overlap = len(tokens & _tokenize_for_overlap(text))
+    return 0.15 * overlap
+
+
+def _lexical_filter_hits(query: str, hits: Sequence["Hit"]) -> List["Hit"]:
+    strong_tokens = set(re.findall(r"[a-z0-9_]{2,}", query.lower()))
+    tokens = strong_tokens or _tokenize_for_overlap(query)
+    if not tokens:
+        return list(hits)
+    matched: List[Hit] = []
+    for hit in hits:
+        payload = getattr(hit, "payload", {}) or {}
+        fields = [
+            str(payload.get("title") or ""),
+            str(payload.get("dataset_name") or ""),
+            str(payload.get("doc_type") or ""),
+            str(payload.get("source_file") or ""),
+            str(payload.get("caption") or ""),
+            str(payload.get("table_label") or ""),
+        ]
+        tags = payload.get("tags")
+        if isinstance(tags, list):
+            fields.extend(str(t) for t in tags if t)
+        hay = " ".join(f for f in fields if f).lower()
+        if not hay:
+            continue
+        if any(tok in hay for tok in tokens):
+            matched.append(hit)
+    return matched or list(hits)
+
+
+def _looks_like_table_request(query: str) -> bool:
+    if not query:
+        return False
+    lowered = query.lower()
+    if "table" in lowered:
+        return True
+    if any(token in query for token in ("表格", "表 4", "表4", "表 3", "表3")):
+        return True
+    if ("depth" in lowered or "深度" in query) and ("variable" in lowered or "變數" in query):
+        return True
+    return False
+
+
+def _pick_best_table_hit(query: str, hits: Sequence["Hit"]) -> Optional["Hit"]:
+    if not hits:
+        return None
+    q = (query or "").lower()
+    wants_table4 = any(token in q for token in ("table 4", "表4", "表 4"))
+    candidates = [h for h in hits if getattr(h, "doc_type", "") == "table"]
+    if not candidates:
+        return None
+
+    tokens = _table_query_tokens(query)
+
+    def score(hit: "Hit") -> int:
+        payload = getattr(hit, "payload", {}) or {}
+        caption = str(payload.get("caption") or "").lower()
+        text = str(payload.get("text") or "").lower()
+        markdown = str(payload.get("markdown_content") or "").lower()
+        hay = " ".join([caption, text, markdown])
+        s = 0
+        if wants_table4 and "table 4" in caption:
+            s += 50
+        if "depth" in q and "depth" in caption:
+            s += 20
+        if "variable" in q and "variable" in caption:
+            s += 20
+        if "oceanographic" in q and "oceanographic" in caption:
+            s += 10
+        if "table 4" in text:
+            s += 5
+        if tokens:
+            overlap = len(tokens & _tokenize_for_overlap(hay))
+            s += overlap
+        return s
+
+    candidates.sort(key=score, reverse=True)
+    return candidates[0]
+
+
+def _table_query_tokens(query: str) -> set[str]:
+    tokens = _tokenize_for_overlap(query)
+    if not tokens:
+        return set()
+    expansions = {
+        "深度": "depth",
+        "變數": "variable",
+        "範圍": "range",
+        "海洋學": "oceanographic",
+        "表格": "table",
+    }
+    expanded = set(tokens)
+    for key, value in expansions.items():
+        if key in query:
+            expanded.update(_tokenize_for_overlap(value))
+    return expanded
+
+
+def _fetch_table_candidates(query: str, collections: Sequence[str], limit: int = 20) -> List["Hit"]:
+    client = get_qdrant()
+    vector = encode_query(query)
+    hits: List[Hit] = []
+    for coll in collections:
+        try:
+            from qdrant_client.http import models  # type: ignore
+            table_filter = models.Filter(
+                must=[models.FieldCondition(key="doc_type", match=models.MatchValue(value="table"))]
+            )
+            resp = client.query_points(
+                collection_name=coll,
+                query=vector,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+                query_filter=table_filter,
+            )
+        except Exception:
+            continue
+        points = getattr(resp, "points", resp)
+        for point in points or []:
+            payload = getattr(point, "payload", {}) or {}
+            text = get_payload_text(payload)
+            score = float(getattr(point, "score", payload.get("score", 0.0)) or 0.0)
+            chunk = payload.get("chunk_id")
+            try:
+                chunk_id = int(chunk) if chunk is not None else 0
+            except Exception:
+                chunk_id = 0
+            title = str(payload.get("title") or payload.get("doc_id") or payload.get("source_file") or "(untitled)")
+            hits.append(
+                Hit(
+                    id=str(getattr(point, "id", payload.get("doc_id") or uuid.uuid4())),
+                    score=score,
+                    title=title,
+                    doc_type=str(payload.get("doc_type") or "n/a"),
+                    source_file=str(payload.get("source_file") or ""),
+                    chunk_id=chunk_id,
+                    text=text,
+                    payload=payload,
+                )
+            )
+    return hits
+
+
 
 def _norm_hit(h) -> dict:
     """Normalize to a dict we can work with downstream."""
@@ -226,10 +395,11 @@ def _norm_hit(h) -> dict:
 def _get_attr(obj, name, default=None):
     return getattr(obj, name, obj.get(name, default)) if isinstance(obj, dict) else getattr(obj, name, default)
 
-def _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS) -> str:
+def _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS, query: str = "") -> str:
     """
     Balanced notes:
-      - 先挑 1 個 api_spec + 1 個 code/guide
+      - code 類問題：先挑 1 個 api_spec + 1 個 code/guide
+      - 非 code 類問題：以排序後結果為主，不強制特定 doc_type
       - 再用分數高的補滿，其間全程以「文件鍵」去重
       - 不再用 set(Hit)（Hit 不可雜湊），改用 key set
     """
@@ -246,29 +416,41 @@ def _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS) ->
         text = (getattr(h, "text", "") or p.get("text") or p.get("snippet") or "").strip()
         if not text:
             return ""
-        snippet = text[:NOTES_SNIPPET_CHARS]
+        doc_type = getattr(h, "doc_type", "")
+        max_snippet = NOTES_SNIPPET_CHARS
+        if doc_type in {"table", "image_description"}:
+            max_snippet = min(len(text), max(NOTES_SNIPPET_CHARS, 1400))
+        snippet = text[:max_snippet]
         return f"[{getattr(h,'doc_type','')}] {title} ({src}#{cid})\n{snippet}"
 
-    # 類別分組
-    api   = [h for h in hits if getattr(h, "doc_type", "") == "api_spec"]
+    want_code = _wants_code(query or "")
+
+    api = [h for h in hits if getattr(h, "doc_type", "") == "api_spec"]
     codey = [h for h in hits if getattr(h, "doc_type", "") in {"code_snippet", "cli_tool_guide"}]
 
-    # 用 key set 取代 set(Hit)
-    seen_keys = set(_key(h) for h in (api + codey))
-    rest = [h for h in hits if _key(h) not in seen_keys]
-
-    # 組合順序：api_spec → code/guide → 其餘（保持原先排序/分數排序由外層決定）
-    ordered = []
-    if api:
-        ordered.append(api[0])
-    if codey:
-        ordered.append(codey[0])
-    for h in hits:
-        k = _key(h)
-        if k in seen_keys:
-            continue
-        seen_keys.add(k)
-        ordered.append(h)
+    if want_code:
+        # 用 key set 取代 set(Hit)
+        seen_keys = set(_key(h) for h in (api + codey))
+        ordered = []
+        if api:
+            ordered.append(api[0])
+        if codey:
+            ordered.append(codey[0])
+        for h in hits:
+            k = _key(h)
+            if k in seen_keys:
+                continue
+            seen_keys.add(k)
+            ordered.append(h)
+    else:
+        ordered = []
+        seen_keys = set()
+        for h in hits:
+            k = _key(h)
+            if k in seen_keys:
+                continue
+            seen_keys.add(k)
+            ordered.append(h)
 
     # 逐篇累加到上限
     parts, total, used = [], 0, 0
@@ -291,8 +473,8 @@ def _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS) ->
     return "\n\n---\n\n".join(parts)
 
 def _collections_key(cols: Optional[Sequence[str]]) -> frozenset[str]:
-    cols = list(cols) if cols else DEFAULT_COLLECTIONS
-    return frozenset(cols or DEFAULT_COLLECTIONS)
+    cols = list(cols) if cols else get_active_collections()
+    return frozenset(cols or get_active_collections())
 
 def get_embedder() -> SentenceTransformer:
     global _embedder
@@ -367,10 +549,28 @@ def get_payload_text(payload: Dict[str, Any]) -> str:
     return json.dumps({k: v for k, v in payload.items() if k not in {"vector"}}, ensure_ascii=False)
 
 
+def _is_remote_source(value: str) -> bool:
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
 def get_title_url(payload: Dict[str, Any]) -> tuple[str, str]:
-    title = payload.get("title") or payload.get("doc_id") or payload.get("source_file") or "(untitled)"
-    url = payload.get("canonical_url") or payload.get("source_file") or ""
-    return str(title), str(url)
+    title = payload.get("title") or payload.get("doc_id") or "(untitled)"
+    url = payload.get("canonical_url") or ""
+    issuer = payload.get("issuer") or ""
+    source_file = payload.get("source_file") or ""
+
+    if not url and _is_remote_source(source_file):
+        url = source_file
+
+    label = ""
+    if issuer and url:
+        label = f"{issuer} — {url}"
+    elif issuer:
+        label = str(issuer)
+    elif url:
+        label = str(url)
+
+    return str(title), str(label)
 
 
 def _norm_doc_type(doc_type: Optional[str]) -> str:
@@ -447,6 +647,96 @@ def _norm_append_values(value: Any) -> List[str]:
         return [str(v).strip().lower() for v in value]
     return [str(value).strip().lower()]
 
+
+def _omnipipe_source_enabled() -> bool:
+    return os.environ.get("ODB_ONEPASS_SOURCE", "yaml").lower() == "omnipipe"
+
+
+def _link_expansion_enabled() -> bool:
+    flag = os.environ.get("OMNIPIPE_LINK_EXPANSION", "").strip().lower()
+    return flag not in {"", "0", "false", "no"}
+
+
+def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: int = 6) -> List["Hit"]:
+    if not hits or limit <= 0:
+        return []
+    allowed = {"references", "related_to", "parent"}
+    seen_artifacts: set[str] = set()
+    expanded: List[Hit] = []
+
+    for hit in hits:
+        payload = getattr(hit, "payload", {}) or {}
+        artifact_id = payload.get("artifact_id") or payload.get("doc_id")
+        if artifact_id:
+            seen_artifacts.add(str(artifact_id))
+
+    for hit in hits:
+        if len(expanded) >= limit:
+            break
+        payload = getattr(hit, "payload", {}) or {}
+        links = payload.get("links") or []
+        collection = payload.get("collection")
+        if not collection or not isinstance(links, list):
+            continue
+        for link in links:
+            if len(expanded) >= limit:
+                break
+            if not isinstance(link, dict):
+                continue
+            link_type = link.get("link_type")
+            if link_type not in allowed:
+                continue
+            target_id = link.get("target_id")
+            if not target_id:
+                continue
+            target_id = str(target_id)
+            if target_id in seen_artifacts:
+                continue
+            try:
+                points, _ = client.scroll(
+                    collection_name=collection,
+                    scroll_filter=Filter(must=[FieldCondition(key="artifact_id", match=MatchValue(value=target_id))]),
+                    limit=1,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            except Exception:  # pragma: no cover
+                continue
+            if not points:
+                continue
+            point = points[0]
+            payload2 = getattr(point, "payload", {}) or {}
+            text = get_payload_text(payload2)
+            chunk = payload2.get("chunk_id")
+            try:
+                chunk_id = int(chunk) if chunk is not None else 0
+            except Exception:
+                chunk_id = 0
+            title = str(payload2.get("title") or payload2.get("doc_id") or payload2.get("source_file") or "(untitled)")
+            base_score = float(getattr(hit, "score", 0.0) or 0.0)
+            confidence = 1.0
+            metadata = link.get("metadata") if isinstance(link.get("metadata"), dict) else {}
+            if metadata and "confidence" in metadata:
+                try:
+                    confidence = float(metadata.get("confidence", 1.0))
+                except Exception:
+                    confidence = 1.0
+            score = base_score * confidence
+            expanded.append(
+                Hit(
+                    id=str(getattr(point, "id", payload2.get("doc_id") or uuid.uuid4())),
+                    score=score,
+                    title=title,
+                    doc_type=str(payload2.get("doc_type") or "n/a"),
+                    source_file=str(payload2.get("source_file") or ""),
+                    chunk_id=chunk_id,
+                    text=text,
+                    payload=payload2,
+                )
+            )
+            seen_artifacts.add(target_id)
+    return expanded
+
 # ---- Hit helpers: keep Hit objects ----
 CODE_LIKE = {"api_spec", "code_snippet", "cli_tool_guide"}
 
@@ -504,26 +794,78 @@ def _collect_api_specs_from_hits(hits: Sequence[Hit]) -> List[str]:
             texts.append(text)
     return texts
 
+
+def _collect_api_endpoints_from_hits(hits: Sequence[Hit]) -> Dict[str, Any]:
+    paths: set[str] = set()
+    params: set[str] = set()
+    append_allowed: set[str] = set()
+    param_enums: Dict[str, List[str]] = {}
+    servers: set[str] = set()
+    for hit in hits:
+        payload = getattr(hit, "payload", None)
+        if not isinstance(payload, dict):
+            payload = getattr(hit, "__dict__", {}).get("payload", {}) or {}
+        doc_type = _norm_doc_type(payload.get("doc_type"))
+        if doc_type not in {"api_endpoint"} and not payload.get("path"):
+            continue
+        path = payload.get("path")
+        if isinstance(path, str) and path.strip():
+            paths.add(path.strip())
+        parameters = payload.get("parameters") or []
+        if isinstance(parameters, list):
+            for param in parameters:
+                if not isinstance(param, dict):
+                    continue
+                name = param.get("name") or param.get("param") or param.get("id")
+                if isinstance(name, str) and name.strip():
+                    name = name.strip()
+                    params.add(name)
+                    schema = param.get("schema") if isinstance(param.get("schema"), dict) else {}
+                    enum_vals = schema.get("enum") if isinstance(schema, dict) else None
+                    if isinstance(enum_vals, list) and enum_vals:
+                        param_enums.setdefault(name, [])
+                        for v in enum_vals:
+                            sv = str(v)
+                            if sv not in param_enums[name]:
+                                param_enums[name].append(sv)
+                        if name == "append":
+                            append_allowed.update(str(v) for v in enum_vals if v is not None)
+                    if name == "append":
+                        for desc in (param.get("description"), schema.get("description")):
+                            for value in _extract_allowed_fields_from_text(desc):
+                                append_allowed.add(value)
+    return {
+        "paths": sorted(paths),
+        "params": sorted(params),
+        "append_allowed": sorted(append_allowed),
+        "param_enums": param_enums,
+        "servers": sorted(servers),
+    }
+
 def _collect_api_specs_full_scan(limit: int = 512, collections: Optional[Sequence[str]] = None) -> List[str]:
     client = get_qdrant()
     texts: List[str] = []
     scroll_filter = Filter(must=[FieldCondition(key="doc_type", match=MatchValue(value="api_spec"))])
 
-    collections = list(collections) if collections else DEFAULT_COLLECTIONS
+    collections = list(collections) if collections else get_active_collections()
     if not collections:
-        collections = DEFAULT_COLLECTIONS
+        collections = get_active_collections()
 
     for collection in collections:
         next_page = None
         while len(texts) < limit:
-            res = client.scroll(
-                collection_name=collection,
-                scroll_filter=scroll_filter,
-                limit=min(64, limit - len(texts)),
-                with_payload=True,
-                with_vectors=False,
-                offset=next_page,
-            )
+            try:
+                res = client.scroll(
+                    collection_name=collection,
+                    scroll_filter=scroll_filter,
+                    limit=min(64, limit - len(texts)),
+                    with_payload=True,
+                    with_vectors=False,
+                    offset=next_page,
+                )
+            except Exception as exc:  # pragma: no cover
+                logger.warning("scroll api_spec failed for %s: %s", collection, exc)
+                break
             points, next_page = res
             if not points:
                 break
@@ -541,6 +883,74 @@ def _collect_api_specs_full_scan(limit: int = 512, collections: Optional[Sequenc
     return texts
 
 
+def _collect_api_endpoints_full_scan(limit: int = 512, collections: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    client = get_qdrant()
+    scroll_filter = Filter(must=[FieldCondition(key="doc_type", match=MatchValue(value="api_endpoint"))])
+    collections = list(collections) if collections else get_active_collections()
+    if not collections:
+        collections = get_active_collections()
+    acc = {"paths": set(), "params": set(), "append_allowed": set(), "param_enums": {}, "servers": set()}
+
+    for collection in collections:
+        next_page = None
+        while len(acc["paths"]) < limit:
+            try:
+                res = client.scroll(
+                    collection_name=collection,
+                    scroll_filter=scroll_filter,
+                    limit=128,
+                    with_payload=True,
+                    with_vectors=False,
+                    offset=next_page,
+                )
+            except Exception as exc:  # pragma: no cover
+                logger.warning("scroll api_endpoint failed for %s: %s", collection, exc)
+                break
+            points, next_page = res
+            if not points:
+                break
+            for point in points:
+                payload = getattr(point, "payload", {}) or {}
+                if not isinstance(payload, dict):
+                    continue
+                path = payload.get("path")
+                if isinstance(path, str) and path.strip():
+                    acc["paths"].add(path.strip())
+                parameters = payload.get("parameters") or []
+                if isinstance(parameters, list):
+                    for param in parameters:
+                        if not isinstance(param, dict):
+                            continue
+                        name = param.get("name") or param.get("param") or param.get("id")
+                        if isinstance(name, str) and name.strip():
+                            name = name.strip()
+                            acc["params"].add(name)
+                            schema = param.get("schema") if isinstance(param.get("schema"), dict) else {}
+                            enum_vals = schema.get("enum") if isinstance(schema, dict) else None
+                            if isinstance(enum_vals, list) and enum_vals:
+                                acc["param_enums"].setdefault(name, [])
+                                for v in enum_vals:
+                                    sv = str(v)
+                                    if sv not in acc["param_enums"][name]:
+                                        acc["param_enums"][name].append(sv)
+                                if name == "append":
+                                    acc["append_allowed"].update(str(v) for v in enum_vals if v is not None)
+                            if name == "append":
+                                for desc in (param.get("description"), schema.get("description")):
+                                    for value in _extract_allowed_fields_from_text(desc):
+                                        acc["append_allowed"].add(value)
+            if next_page is None:
+                break
+
+    return {
+        "paths": sorted(acc["paths"]),
+        "params": sorted(acc["params"]),
+        "append_allowed": sorted(acc["append_allowed"]),
+        "param_enums": acc["param_enums"],
+        "servers": sorted(acc["servers"]),
+    }
+
+
 def _json_pointer(obj: Any, pointer: str) -> Any:
     if not pointer.startswith("#/"):
         return None
@@ -552,7 +962,18 @@ def _json_pointer(obj: Any, pointer: str) -> Any:
             return None
     return current
 
-_ALLOWED_DESC_RE = re.compile(r"Allowed fields\s*:\s*'([^']+)'(?:\s*,\s*'([^']+)')?(?:\s*,\s*'([^']+)')?(?:\s*,\s*'([^']+)')?", re.I)
+_ALLOWED_DESC_RE = re.compile(
+    r"Allowed fields\s*:\s*'([^']+)'(?:\s*,\s*'([^']+)')?(?:\s*,\s*'([^']+)')?(?:\s*,\s*'([^']+)')?",
+    re.I,
+)
+
+def _extract_allowed_fields_from_text(text: str) -> List[str]:
+    if not text:
+        return []
+    match = _ALLOWED_DESC_RE.search(str(text))
+    if not match:
+        return []
+    return [group for group in match.groups() if group]
 
 def _parse_oas_text(raw: str) -> Dict[str, Any]:
     params: set[str] = set()
@@ -897,7 +1318,7 @@ def search_qdrant(query: str, k: int = 6, collections: Optional[List[str]] = Non
     if not (query or "").strip():
         return []
 
-    collections = collections or DEFAULT_COLLECTIONS
+    collections = collections or get_active_collections()
     vector = encode_query(query)
     client = get_qdrant()
 
@@ -998,6 +1419,60 @@ def search_qdrant(query: str, k: int = 6, collections: Optional[List[str]] = Non
         except Exception as exc:  # pragma: no cover
             logger.error("Qdrant biased query failed for %s: %s", coll, exc)
 
+    if _looks_like_table_request(query):
+        for coll in collections:
+            try:
+                from qdrant_client.http import models  # type: ignore
+                table_filter = models.Filter(
+                    must=[models.FieldCondition(key="doc_type", match=models.MatchValue(value="table"))]
+                )
+                resp3 = client.query_points(
+                    collection_name=coll,
+                    query=vector,
+                    limit=10,
+                    with_payload=True,
+                    with_vectors=False,
+                    query_filter=table_filter,
+                )
+            except Exception:
+                resp3 = None
+            if not resp3:
+                continue
+            points3 = getattr(resp3, "points", resp3)
+            for point in points3 or []:
+                payload = getattr(point, "payload", {}) or {}
+                text = get_payload_text(payload)
+                score = float(getattr(point, "score", payload.get("score", 0.0)) or 0.0)
+                chunk = payload.get("chunk_id")
+                try:
+                    chunk_id = int(chunk) if chunk is not None else 0
+                except Exception:
+                    chunk_id = 0
+                title = str(payload.get("title") or payload.get("doc_id") or payload.get("source_file") or "(untitled)")
+                hit = Hit(
+                    id=str(getattr(point, "id", payload.get("doc_id") or uuid.uuid4())),
+                    score=score,
+                    title=title,
+                    doc_type=str(payload.get("doc_type") or "n/a"),
+                    source_file=str(payload.get("source_file") or ""),
+                    chunk_id=chunk_id,
+                    text=text,
+                    payload=payload,
+                )
+                all_hits.append(hit)
+
+    if all_hits:
+        for hit in all_hits:
+            payload = getattr(hit, "payload", {}) or {}
+            bonus = _score_bonus_from_payload(payload, query)
+            if bonus:
+                hit.score = float(hit.score or 0.0) + bonus
+
+    if _omnipipe_source_enabled() and _link_expansion_enabled():
+        expanded = expand_hits_via_links(all_hits, client, limit=max(k, 1))
+        if expanded:
+            all_hits.extend(expanded)
+
     # --- Dedupe (by doc_id or (title, source_file)) ---
     all_hits.sort(key=lambda h: h.score, reverse=True)
     deduped: List[Hit] = []
@@ -1045,6 +1520,7 @@ def search_qdrant(query: str, k: int = 6, collections: Optional[List[str]] = Non
 
 def harvest_oas_whitelist(hits: List[Hit]) -> Dict[str, Any]:
     texts = _collect_api_specs_from_hits(hits)
+    endpoint_whitelist = _collect_api_endpoints_from_hits(hits)
 
     def merge_into(dst, src):
         for name in src.get("params", []) or []: dst["params"].add(str(name))
@@ -1061,6 +1537,9 @@ def harvest_oas_whitelist(hits: List[Hit]) -> Dict[str, Any]:
     for raw in texts:
         merge_into(acc, _parse_oas_text(raw))
 
+    if endpoint_whitelist.get("paths"):
+        merge_into(acc, endpoint_whitelist)
+
     if (len(acc["params"]) <= 1 or not acc["paths"]):
         cols = {h.payload.get("collection") for h in hits if h.payload}
         key = _collections_key([c for c in cols if isinstance(c, str) and c] or None)
@@ -1069,6 +1548,9 @@ def harvest_oas_whitelist(hits: List[Hit]) -> Dict[str, Any]:
             merged = {"params": set(), "paths": set(), "append_allowed": set(), "servers": set(), "param_enums": {}}
             for raw in _collect_api_specs_full_scan(limit=256, collections=list(key)):
                 merge_into(merged, _parse_oas_text(raw))
+            if not merged["paths"]:
+                endpoint_full = _collect_api_endpoints_full_scan(limit=512, collections=list(key))
+                merge_into(merged, endpoint_full)
             cached = {
                 "params": sorted(merged["params"]),
                 "paths": sorted(merged["paths"]),
@@ -1270,7 +1752,7 @@ def format_citations(hits: List[Hit], answer_text: Optional[str] = None, limit: 
     for hit in selected_hits:
         payload = hit.payload or {}
         title, url = get_title_url(payload)
-        source = url or hit.source_file or payload.get("source_file", "")
+        source = url or ""
         key = (title, source, hit.chunk_id)
         if key in seen:
             continue
@@ -1379,17 +1861,38 @@ def run_onepass(
     tide_hint = _looks_like_tide_request(query)
 
     hits_raw = search_qdrant(query, k=max(k, 1) * 3, collections=collections)
+    hits_raw = _lexical_filter_hits(query, hits_raw)
+    if debug_enabled:
+        active_cols = collections or get_active_collections()
+        logger.info("[onepass] active_collections=%s", active_cols)
+        preview = []
+        for h in hits_raw[:5]:
+            preview.append(
+                {
+                    "doc_type": getattr(h, "doc_type", ""),
+                    "source_file": getattr(h, "source_file", ""),
+                    "title": getattr(h, "title", ""),
+                    "score": float(getattr(h, "score", 0.0) or 0.0),
+                }
+            )
+        logger.info("[onepass] hits_preview=%s", json.dumps(preview, ensure_ascii=False))
 
     # 去重（檔案層）→ code/api 優先 → 多樣化取前 k
     hits_stage = prefer_code_api_first_hits(dedupe_hits_hits(hits_raw))
     hits       = rerank_diversify_hits(hits_stage, k=k)
+    if _looks_like_table_request(query):
+        table_candidates = _fetch_table_candidates(query, collections or get_active_collections(), limit=20)
+        table_hit = _pick_best_table_hit(query, table_candidates or hits_raw)
+        if table_hit:
+            hits = [table_hit] + [h for h in hits if h is not table_hit][: max(0, k - 1)]
+
     t1 = time.perf_counter()
 
     whitelist = harvest_oas_whitelist(hits)
     t2 = time.perf_counter()
 
     # NEW: 由檢索結果組 notes
-    notes = _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS)
+    notes = _compress_notes(hits, max_chars=NOTES_MAX_CHARS, max_docs=NOTES_MAX_DOCS, query=query)
     if debug_enabled:
         nlen = len(notes or "")
         nhead = "\n".join((notes or "").splitlines()[:6])
@@ -1448,6 +1951,16 @@ def run_onepass(
     if debug_enabled:
         result.debug = (result.debug or {})
         result.debug["continued"] = continued
+        result.debug["active_collections"] = collections or get_active_collections()
+        result.debug["hits_preview"] = [
+            {
+                "doc_type": getattr(h, "doc_type", ""),
+                "source_file": getattr(h, "source_file", ""),
+                "title": getattr(h, "title", ""),
+                "score": float(getattr(h, "score", 0.0) or 0.0),
+            }
+            for h in hits_raw[:5]
+        ]
 
     plan_ok, guard_ok = None, None
     warnings: List[str] = []

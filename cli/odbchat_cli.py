@@ -22,6 +22,7 @@ then falls back to MCP tool if streaming fails).
 """
 
 import asyncio
+import time
 import json
 import sys
 from typing import Optional, Dict, Any, List
@@ -41,6 +42,7 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 import websockets
+import httpx
 from fastmcp import Client
 try:  # Optional; improves line editing on POSIX systems
     import readline  # type: ignore
@@ -60,11 +62,18 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 
 class ODBChatClient:
     def __init__(self, server_url: str = DEFAULT_SERVER_URL, default_model: str = DEFAULT_MODEL):
-        self.server_url = server_url
+        self.server_url = self._normalize_server_url(server_url)
         self.current_model = default_model
         self.temperature = DEFAULT_TEMPERATURE
         self.debug = False
         self.client: Optional[Client] = None
+        self._reconnecting = False
+        self.mcp_timeout = float(os.getenv("ODBCHAT_MCP_TIMEOUT", "90"))
+        self.mcp_init_timeout = float(os.getenv("ODBCHAT_MCP_INIT_TIMEOUT", "10"))
+        self.mcp_ping_timeout = float(os.getenv("ODBCHAT_MCP_PING_TIMEOUT", "2"))
+        self.mcp_ping_interval = float(os.getenv("ODBCHAT_MCP_PING_INTERVAL", "10"))
+        self._last_ping_ok = 0.0
+        self._last_ping_status: int | None = None
         # Session-only history for slash-commands (e.g., "/mhw ...")
         self._cmd_history: list[str] = []
         self._commands = {}  # name -> async handler
@@ -90,30 +99,185 @@ class ODBChatClient:
     # ----------------------
     async def connect(self) -> bool:
         """Connect to the MCP server at self.server_url."""
-        await self.disconnect()  # ensure clean state
         try:
-            self.client = Client(self.server_url)
-            await self.client.__aenter__()
-            print(f"✅ Connected to ODB MCP server at {self.server_url}")
-            # fetch server-side model info right after connect
-            info = await self._fetch_server_model_info()
-            print(f"You ({info.get('provider','unknown')}:{info.get('model', self.current_model)} @ {self.temperature})")
+            await self._disconnect_mcp()  # ensure clean MCP state only
+        except Exception as exc:  # pragma: no cover
+            if self.debug:
+                print(f"[debug] MCP disconnect failed during connect: {type(exc).__name__}: {exc}")
+        last_exc = None
+        for candidate in self._iter_server_urls(self.server_url):
             try:
-                await self._start_viewer_server()
-            except Exception as exc:
+                self.client = Client(candidate, timeout=self.mcp_timeout, init_timeout=self.mcp_init_timeout)
+                await self.client.__aenter__()
+                self.server_url = candidate
+                print(f"✅ Connected to ODB MCP server at {self.server_url}")
+                # fetch server-side model info right after connect
+                info = await self._fetch_server_model_info()
+                print(f"You ({info.get('provider','unknown')}:{info.get('model', self.current_model)} @ {self.temperature})")
+                try:
+                    await self._start_viewer_server()
+                except Exception as exc:
+                    if self.debug:
+                        print(f"[view] failed to start viewer server: {exc}")
+                return True
+            except Exception as e:  # pragma: no cover
+                last_exc = e
                 if self.debug:
-                    print(f"[view] failed to start viewer server: {exc}")
-            return True
-        except Exception as e:  # pragma: no cover
-            print(f"❌ Failed to connect to server: {e}")
-            print("Make sure the server is running: python odbchat_mcp_server.py")
-            self.client = None
+                    print(f"[debug] MCP connect failed for {candidate}: {type(e).__name__}: {e}")
+                await self._disconnect_mcp()
+                self.client = None
+                continue
+        print(f"❌ Failed to connect to server: {last_exc}")
+        print("Make sure the server is running: python odbchat_mcp_server.py")
+        self.client = None
+        return False
+
+    def _normalize_server_url(self, url: str) -> str:
+        if not url:
+            return DEFAULT_SERVER_URL.rstrip("/")
+        return url.rstrip("/")
+
+    def _iter_server_urls(self, url: str) -> List[str]:
+        url = self._normalize_server_url(url)
+        if url.endswith("/mcp"):
+            return [url, url + "/"]
+        if url.endswith("/mcp/"):
+            return [url.rstrip("/"), url]
+        return [url]
+
+    async def _reconnect_mcp(self) -> bool:
+        """Reconnect to MCP server after a failure (e.g., server restart)."""
+        if self._reconnecting:
             return False
+        self._reconnecting = True
+        if self.debug:
+            print(f"↻ Reconnecting to MCP server ({self.server_url})...")
+        try:
+            for attempt in range(1, 4):
+                ok = await self.connect()
+                if ok:
+                    return True
+                await asyncio.sleep(0.5 * attempt)
+            return False
+        finally:
+            self._reconnecting = False
+
+    async def _ping_server(self) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=self.mcp_ping_timeout) as client:
+                resp = await client.get(
+                    self.server_url,
+                    headers={"Accept": "text/event-stream, application/json"},
+                )
+            self._last_ping_status = resp.status_code
+            if resp.status_code == 406:
+                self._last_ping_ok = time.time()
+                return True
+            if resp.status_code < 500:
+                self._last_ping_ok = time.time()
+                return True
+            return False
+        except Exception as exc:
+            if self.debug:
+                print(f"[debug] MCP ping failed: {type(exc).__name__}: {exc}")
+            return False
+
+    def _should_pre_ping(self) -> bool:
+        if self._reconnecting:
+            return False
+        now = time.time()
+        return (now - self._last_ping_ok) > self.mcp_ping_interval
+
+    async def _call_tool(self, name: str, payload: Dict[str, Any] | None = None, retry: bool = True):
+        if not self.client:
+            raise RuntimeError("Not connected to MCP server")
+        payload = payload or {}
+        last_exc = None
+        attempts = 2 if retry else 1
+        if retry and self._should_pre_ping():
+            server_alive = await self._ping_server()
+            if not server_alive:
+                try:
+                    await self._reconnect_mcp()
+                except Exception as reconnect_exc:
+                    if self.debug:
+                        print(f"[debug] MCP reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}")
+            elif self._last_ping_status in {400, 404, 405}:
+                try:
+                    await self._reconnect_mcp()
+                except Exception as reconnect_exc:
+                    if self.debug:
+                        print(f"[debug] MCP reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}")
+        for attempt in range(1, attempts + 1):
+            try:
+                if self.debug:
+                    print(f"[debug] MCP call {name} -> {self.server_url} (attempt {attempt}/{attempts})")
+                return await asyncio.wait_for(self.client.call_tool(name, payload), timeout=self.mcp_timeout)
+            except asyncio.TimeoutError as exc:
+                last_exc = exc
+                if self.debug:
+                    print(f"[debug] MCP call timed out after {self.mcp_timeout}s")
+                server_alive = await self._ping_server()
+                if retry and not self._reconnecting:
+                    try:
+                        ok = await self._reconnect_mcp()
+                    except Exception as reconnect_exc:
+                        if self.debug:
+                            print(f"[debug] MCP reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}")
+                        ok = False
+                    if ok and self.client:
+                        continue
+                if server_alive and self._last_ping_status in {400, 404, 405}:
+                    try:
+                        ok = await self._reconnect_mcp()
+                    except Exception as reconnect_exc:
+                        if self.debug:
+                            print(f"[debug] MCP reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}")
+                        ok = False
+                    if ok and self.client:
+                        continue
+                if server_alive:
+                    break
+                break
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if self.debug:
+                    status = exc.response.status_code if exc.response else "unknown"
+                    print(f"[debug] MCP HTTP error {status}; attempting reconnect")
+                if retry and not self._reconnecting:
+                    try:
+                        ok = await self._reconnect_mcp()
+                    except Exception as reconnect_exc:
+                        if self.debug:
+                            print(f"[debug] MCP reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}")
+                        ok = False
+                    if ok and self.client:
+                        continue
+                break
+            except Exception as exc:
+                last_exc = exc
+                if self.debug:
+                    print(f"[debug] MCP call failed: {type(exc).__name__}: {exc}")
+                if not retry or self._reconnecting:
+                    break
+                try:
+                    ok = await self._reconnect_mcp()
+                except Exception as reconnect_exc:
+                    if self.debug:
+                        print(f"[debug] MCP reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}")
+                    ok = False
+                if not ok or not self.client:
+                    break
+                await asyncio.sleep(0.5 * attempt)
+        raise last_exc
 
     async def disconnect(self):
         if self.client is not None:
             try:
                 await self.client.__aexit__(None, None, None)
+            except Exception as exc:
+                if self.debug:
+                    print(f"[debug] MCP disconnect failed: {type(exc).__name__}: {exc}")
             finally:
                 self.client = None
         if self._viewer_server:
@@ -136,10 +300,23 @@ class ODBChatClient:
             self.viewer_caps = {}
         self._viewer_pending.clear()
 
+    async def _disconnect_mcp(self):
+        if self.client is None:
+            return
+        try:
+            await self.client.__aexit__(None, None, None)
+        except Exception as exc:
+            if self.debug:
+                print(f"[debug] MCP disconnect failed: {type(exc).__name__}: {exc}")
+        finally:
+            self.client = None
+
     # ----------------------
     # Viewer bridge
     # ----------------------
     async def _start_viewer_server(self):
+        if self._viewer_server:
+            return
         async def handler(websocket, path=None):
             try:
                 await self._viewer_ws_handler(websocket)
@@ -246,7 +423,7 @@ class ODBChatClient:
             print("❌ Not connected. Use /server connect <url> first.")
             return False
         try:
-            result = await self.client.call_tool("check_ollama_status", {})
+            result = await self._call_tool("check_ollama_status", {})
             status_text = self._extract_text(result)
             status_data = json.loads(status_text)
             print(f"\n🔍 Server Status:")
@@ -266,7 +443,7 @@ class ODBChatClient:
             print("❌ Not connected. Use /server connect <url> first.")
             return []
         try:
-            result = await self.client.call_tool("list_available_models", {})
+            result = await self._call_tool("list_available_models", {})
             models_text = self._extract_text(result)
             models = json.loads(models_text)
             names = sorted({str(m) for m in models}) if isinstance(models, list) else []
@@ -283,7 +460,7 @@ class ODBChatClient:
             print("❌ Not connected. Use /server connect <url> first.")
             return
         try:
-            result = await self.client.call_tool("get_model_info", {"model": name})
+            result = await self._call_tool("get_model_info", {"model": name})
             info_text = self._extract_text(result)
             data = json.loads(info_text)
             if isinstance(data, dict) and 'error' in data:
@@ -308,7 +485,7 @@ class ODBChatClient:
             print("❌ Not connected. Use /server connect <url> first.")
             return
         try:
-            res = await self.client.call_tool(name, args)
+            res = await self._call_tool(name, args)
             text = self._extract_text(res)
             print(text)
         except Exception as e:
@@ -322,7 +499,10 @@ class ODBChatClient:
         if not self.client:
             return {}
         payload = payload or {}
-        res = await self.client.call_tool(tool_name, payload)
+        try:
+            res = await self._call_tool(tool_name, payload)
+        except Exception:
+            return {}
         # 1) direct text
         if getattr(res, "text", None):
             try:
@@ -414,7 +594,7 @@ class ODBChatClient:
                 }
                 if self.debug:
                     payload["debug"] = True
-                result = await self.client.call_tool("router.answer", payload)
+                result = await self._call_tool("router.answer", payload)
                 data = self._extract_json(result)
                 rendered = self._render_onepass_result(data)
                 if isinstance(data, dict):
@@ -472,6 +652,8 @@ class ODBChatClient:
             print(f"You ({info.get('provider','unknown')}:{info.get('model', self.current_model)} @ {self.temperature})")
         except Exception:
             pass
+        if self.debug:
+            print(self._debug_rag_env())
         print("Type /help for commands. Anything else is sent as a prompt.\n")
 
         context = None  # basic rolling context
@@ -518,6 +700,21 @@ class ODBChatClient:
             except Exception as e:  # pragma: no cover
                 print(f"\n❌ Error: {e}")
         self._interactive_mode = False
+
+    def _debug_rag_env(self) -> str:
+        source = os.environ.get("ODB_ONEPASS_SOURCE", "yaml").strip() or "yaml"
+        if source.lower() == "omnipipe":
+            collections = os.environ.get("OMNIPIPE_COLLECTIONS", "").strip() or "(unset)"
+        else:
+            collections = os.environ.get("ODB_ACTIVE_COLLECTIONS", "").strip() or "(unset)"
+        q_host = os.environ.get("QDRANT_HOST", "localhost")
+        q_port = os.environ.get("QDRANT_PORT", "6333")
+        link_exp = os.environ.get("OMNIPIPE_LINK_EXPANSION", "").strip() or "0"
+        return (
+            "[debug] RAG source: "
+            f"{source}; collections: {collections}; link_expansion: {link_exp}; "
+            f"Qdrant: {q_host}:{q_port}"
+        )
 
     # ----------------------
     # Minimal line editor with conditional Up/Down for slash-commands

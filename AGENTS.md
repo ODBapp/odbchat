@@ -42,3 +42,15 @@
 - Explain mode should answer directly from RAG notes, cite sources, and stay out of code fences unless explicitly asked.
 - When adding new behavior, preserve this one-pass structure: enrich the prompt/context or LLM instructions rather than introducing hard-coded branching.
 - **Next-step implementation**: `router.answer` and `server/rag/onepass_prompts.py` must converge to a single classifier. The unified classifier should emit `code | explain | fallback | mcp_tools` (the last one only when GHRSST tools are suitable). Once the unified mode is picked, the rest of the one-pass pipeline executes accordingly (code generation, RAG answer, fallback clarification, or GHRSST proxy). This eliminates redundant stages, reduces latency, and ensures follow-up code questions stay in the code path.
+
+## RAG Design Principles (Systemic)
+- Prefer systemic fixes over per-question heuristics: do not add special-case rules for single prompts or datasets.
+- Preserve semantic metadata from ingestion (e.g., `doc_type`, `dataset_name`, `title`, `tags`) so retrieval can rank relevant sources without hard-coded logic.
+- Use graph links/tags from Omnipipe to expand and consolidate context; let retrieval + metadata drive relevance before LLM reasoning.
+- If answers drift, inspect retrieval hits/notes first and adjust ingestion or metadata mapping, not one-off prompt hacks.
+
+## Recent Findings (Omnipipe JSON RAG)
+- Root cause for wrong answers was retrieval picking irrelevant docs because Omnipipe JSON metadata (doc_type/title/dataset_name/tags) was not lifted into payloads; all artifacts collapsed to `text_chunk`.
+- Systemic fixes: map metadata into top-level payload, add metadata-based lexical filtering/score boost, and add table-aware retrieval that queries `doc_type=table` and scores table captions/markdown.
+- Avoid dataset-specific rules; instead use general table/query cues and metadata overlap to select relevant artifacts.
+- Omnipipe outputs must include metadata on non-text artifacts and emit TextChunkArtifact items for images; otherwise ingestion drops those docs and retrieval drifts.

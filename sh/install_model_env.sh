@@ -72,3 +72,31 @@ python dev/ingest_mhw.py --root rag --collection odb_mhw_knowledge_v1
 export ODB_LLM_PROVIDER=llama-cpp
 export ODB_LLM_MODEL=gemma3:12b
 llama-server -m /home/odbadmin/proj/odbchat/models/google_gemma-3-12b-it-Q5_K_M.gguf -md /home/odbadmin/proj/odbchat/models/google_gemma-3-1b-it-Q4_K_M.gguf -c 6144 -ngl 99 -ngld 24 --parallel 1 -t 16 --threads-batch 16 --batch-size 384 --ubatch-size 384 --kv-unified --no-cont-batching --ctx-checkpoints 0 -fa off --cache-ram 0 --cache-reuse 0 --threads-http 1 --timeout 600 --port 8201
+
+export ODB_LLM_PROVIDER=llama-cpp
+export ODB_LLM_MODEL=gemma3:12b
+export QDRANT_HOST=localhost
+export QDRANT_PORT=6334
+export OMNIPIPE_COLLECTION_PREFIX=odb
+export QDRANT_HOST=127.0.0.1
+export ODB_ONEPASS_SOURCE=omnipipe
+export OMNIPIPE_COLLECTIONS=AI
+export OMNIPIPE_LINK_EXPANSION=1
+
+• 已新增兩支 Omnipipe 專用的 Qdrant 檢測腳本，直接評估新的 RAG 儲存結構：
+
+  - dev/check_qdrant_omnipipe.py
+      - 掃描 payload 統計 doc_type / tags / links / link_type / api_endpoint 分佈
+      - 內建幾個檢索 probes（WOA23、MHW、API 等）
+  - dev/query_qdrant_omnipipe.py
+      - 支援查詢 + --doc-type filter（text_chunk/table/api_endpoint/section）
+      - 直接列出 Top‑K 的 text snippet
+
+  你可以先跑：
+
+python dev/check_qdrant_omnipipe.py --collection AI
+python dev/query_qdrant_omnipipe.py --collection AI --query "WOA23 Table 4 variables"
+python dev/query_qdrant_omnipipe.py --collection AI --query "ODB Open APIs"
+python dev/query_qdrant_omnipipe.py --collection AI --query "MHW API" --doc-type api_endpoint
+
+python ingest/ingest_json.py --root rag/json_out --collection AI --mode overwrite

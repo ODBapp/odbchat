@@ -130,7 +130,12 @@ def _sysrule_explain(force_zh: bool) -> str:
         "You are an ODB assistant. Provide a concise explanation that answers the question.\n"
         + lang +
         "- Use ONLY provided notes for specific resources; no code.\n"
+        "- If notes include a table or list that answers the question, extract the exact values and summarize them; do NOT tell the user to read the table.\n"
+        "- When the question asks for specific themes (e.g., 海流/潮汐/地理圖資/API 類別), scan notes and list ALL matching items; do not repeat unrelated items.\n"
+        "- If notes contain a short enumerated list (e.g., API list), include every relevant item unless the user explicitly asks for a brief subset.\n"
         "- Do NOT include Python or any code fences when MODE=explain; respond with plain sentences/bullets only.\n"
+        "- If the notes do not contain the answer, say you could not find it in the provided documents and ask the user to clarify.\n"
+        "- Do NOT mention unrelated tools or domains unless the user explicitly asks about them.\n"
         "- When the question asks about GUI/非程式工具, explicitly mention every relevant interactive option found in the notes (e.g., Hidy Viewer, ODBchat CLI) with a short description and URL. Never claim a tool is unavailable if the notes describe one.\n"
         "- Keep it short but complete.\n"
     )
