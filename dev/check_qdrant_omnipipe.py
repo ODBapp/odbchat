@@ -211,6 +211,8 @@ def summarize_payloads(payload_iter: Iterable[Dict[str, Any]], sample_n: int = 8
     c_has_path = Counter()
     c_missing = Counter()
     c_table_missing = Counter()
+    c_payload_core = Counter()
+    c_core_missing = Counter()
 
     samples = []
 
@@ -258,6 +260,18 @@ def summarize_payloads(payload_iter: Iterable[Dict[str, Any]], sample_n: int = 8
             if not payload.get("table_label"):
                 c_table_missing["table_label"] += 1
 
+        payload_core = payload.get("payload_core")
+        core_fields = ("doc_type", "dataset_name", "title", "tags", "table_label")
+        if isinstance(payload_core, dict) and payload_core:
+            c_payload_core["has_core"] += 1
+            for field in core_fields:
+                if not payload_core.get(field):
+                    c_core_missing[field] += 1
+        else:
+            c_payload_core["no_core"] += 1
+            for field in core_fields:
+                c_core_missing[field] += 1
+
         if len(samples) < sample_n:
             samples.append({
                 "artifact_id": payload.get("artifact_id"),
@@ -278,6 +292,8 @@ def summarize_payloads(payload_iter: Iterable[Dict[str, Any]], sample_n: int = 8
         "has_path": c_has_path,
         "missing_fields": c_missing,
         "table_missing": c_table_missing,
+        "payload_core": c_payload_core,
+        "payload_core_missing": c_core_missing,
         "samples": samples,
     }
 
@@ -317,6 +333,18 @@ def pretty_print_summary(summary: Dict[str, Any]):
     if table_missing:
         print("\n[Table missing fields]")
         for name, cnt in table_missing.items():
+            print(f"  {name}: {cnt}")
+
+    payload_core = summary.get("payload_core", Counter())
+    if payload_core:
+        print("\n[Payload core]")
+        for name, cnt in payload_core.items():
+            print(f"  {name}: {cnt}")
+
+    core_missing = summary.get("payload_core_missing", Counter())
+    if core_missing:
+        print("\n[Payload core missing fields]")
+        for name, cnt in core_missing.items():
             print(f"  {name}: {cnt}")
 
     print("\n[Samples]")

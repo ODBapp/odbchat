@@ -26,6 +26,8 @@ def test_payload_promotes_metadata_and_infers_dataset():
     assert payload["lang"] == "en"
     assert "woa" in payload["tags"]
     assert "temperature" in payload["tags"]
+    assert payload["payload_core"]["doc_type"] == "web_article"
+    assert payload["payload_core"]["dataset_name"] == "WOA23"
 
 
 def test_payload_infers_dataset_when_missing():
@@ -61,6 +63,7 @@ def test_payload_includes_table_label():
 
     assert payload["doc_type"] == "table"
     assert payload["table_label"] == "Table 4"
+    assert payload["payload_core"]["table_label"] == "Table 4"
 
 
 def test_text_for_artifact_includes_image_metadata():

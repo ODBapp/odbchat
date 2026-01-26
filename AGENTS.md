@@ -54,3 +54,13 @@
 - Systemic fixes: map metadata into top-level payload, add metadata-based lexical filtering/score boost, and add table-aware retrieval that queries `doc_type=table` and scores table captions/markdown.
 - Avoid dataset-specific rules; instead use general table/query cues and metadata overlap to select relevant artifacts.
 - Omnipipe outputs must include metadata on non-text artifacts and emit TextChunkArtifact items for images; otherwise ingestion drops those docs and retrieval drifts.
+
+## Current Maintenance Notes
+- **Omnipipe ingestion**: `ingest/ingest_json.py` merges image `raw_text` + `extracted_items` into the artifact text, so image-based API lists are retrievable. Re-ingest is required after changes.
+- **Citations**: user-facing source labels are derived from `canonical_url` and/or `issuer`; local paths like `bak/temp_uploads` are suppressed.
+- **Viewer bridge**: MCP reconnect must not drop the viewer WS. `connect()` uses `_disconnect_mcp()` to avoid closing odbViz (argo) sessions.
+- **MCP routing**: `浪況/浪高` is routed to tide tools via `TIDE_REGEX`; ensure tests in `tests/test_router_classifier.py` stay green after keyword edits.
+
+## Known Issues (2025-01-06)
+- **MHW API limits**: `/api/mhw` returns HTTP 400 for out-of-range dates (e.g., 2026-01-01). Viewer plotting fails even when the viewer is attached; validate date ranges before issuing plot requests.
+- **Citation gaps**: If documents lack `canonical_url`/`issuer`, citations will show empty sources. Ensure metadata includes a URL when possible.

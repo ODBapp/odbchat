@@ -1469,9 +1469,12 @@ def search_qdrant(query: str, k: int = 6, collections: Optional[List[str]] = Non
                 hit.score = float(hit.score or 0.0) + bonus
 
     if _omnipipe_source_enabled() and _link_expansion_enabled():
+        link_start = time.perf_counter()
         expanded = expand_hits_via_links(all_hits, client, limit=max(k, 1))
+        link_ms = (time.perf_counter() - link_start) * 1000.0
         if expanded:
             all_hits.extend(expanded)
+        logger.debug("[onepass] link_expansion_ms=%.2f expanded=%d", link_ms, len(expanded or []))
 
     # --- Dedupe (by doc_id or (title, source_file)) ---
     all_hits.sort(key=lambda h: h.score, reverse=True)
@@ -1861,7 +1864,11 @@ def run_onepass(
     tide_hint = _looks_like_tide_request(query)
 
     hits_raw = search_qdrant(query, k=max(k, 1) * 3, collections=collections)
+    lex_start = time.perf_counter()
     hits_raw = _lexical_filter_hits(query, hits_raw)
+    lex_ms = (time.perf_counter() - lex_start) * 1000.0
+    if debug_enabled:
+        logger.info("[onepass] lexical_filter_ms=%.2f hits=%d", lex_ms, len(hits_raw))
     if debug_enabled:
         active_cols = collections or get_active_collections()
         logger.info("[onepass] active_collections=%s", active_cols)

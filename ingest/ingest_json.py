@@ -234,6 +234,24 @@ def _payload_from_artifact(artifact: Dict[str, Any], collection: str) -> Dict[st
         if inferred:
             payload["dataset_name"] = inferred
 
+    core_fields = (
+        "doc_type",
+        "dataset_name",
+        "title",
+        "tags",
+        "table_label",
+        "caption",
+        "path",
+        "method",
+    )
+    payload_core: Dict[str, Any] = {}
+    for key in core_fields:
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        payload_core[key] = value
+    payload["payload_core"] = payload_core
+
     return payload
 
 
