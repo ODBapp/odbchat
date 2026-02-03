@@ -116,12 +116,27 @@ def _metadata_text_from_image(metadata: Dict[str, Any]) -> str:
         parts.append(raw_text.strip())
     return "\n".join(parts).strip()
 
+def _truncate_text(value: str, limit: int = 600) -> str:
+    if not value:
+        return ""
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
 
 def text_for_artifact(artifact: Dict[str, Any]) -> str:
     artifact_type = str(artifact.get("artifact_type") or "")
     if artifact_type == "text_chunk":
         base = str(artifact.get("text") or "").strip()
         metadata = artifact.get("metadata")
+        content_type = str(artifact.get("content_type") or metadata.get("content_type") or "").strip().lower() if isinstance(metadata, dict) else str(artifact.get("content_type") or "").strip().lower()
+        if content_type in {"table_card", "table_catalog"} and isinstance(metadata, dict):
+            caption = str(metadata.get("caption") or "").strip()
+            table_label = str(metadata.get("table_label") or "").strip()
+            doc_title = str(metadata.get("doc_title") or metadata.get("title") or "").strip()
+            dataset_name = str(metadata.get("dataset_name") or "").strip()
+            source_file = str(artifact.get("source_file") or "").strip()
+            context = _coalesce_text([doc_title, dataset_name, table_label, caption, source_file], sep=" | ")
+            base = _coalesce_text([context, base], sep="\n").strip()
         if isinstance(metadata, dict):
             image_text = _metadata_text_from_image(metadata)
             if image_text:
@@ -130,7 +145,16 @@ def text_for_artifact(artifact: Dict[str, Any]) -> str:
     if artifact_type == "table":
         caption = str(artifact.get("caption") or "").strip()
         markdown = str(artifact.get("markdown_content") or "").strip()
-        return _coalesce_text([caption, markdown], sep="\n").strip()
+        table_label = str(artifact.get("table_label") or "").strip()
+        usage_guide = str(artifact.get("usage_guide") or "").strip()
+        metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
+        doc_title = str(metadata.get("doc_title") or "").strip()
+        dataset_name = str(metadata.get("dataset_name") or "").strip()
+        source_file = str(artifact.get("source_file") or "").strip()
+        context = _coalesce_text([doc_title, dataset_name, table_label], sep=" | ")
+        footer = _coalesce_text([context, source_file], sep=" | ")
+        usage_hint = _truncate_text(usage_guide)
+        return _coalesce_text([caption, markdown, usage_hint, footer], sep="\n").strip()
     if artifact_type == "api_endpoint":
         method = artifact.get("method")
         path = artifact.get("path")
@@ -191,7 +215,7 @@ def _payload_from_artifact(artifact: Dict[str, Any], collection: str) -> Dict[st
         meta_doc_type = metadata.get("doc_type") or metadata.get("type")
         if meta_doc_type and artifact_type == "text_chunk":
             payload["doc_type"] = str(meta_doc_type)
-        for key in ("dataset_name", "dataset", "title", "lang", "issuer", "source_type"):
+        for key in ("dataset_name", "dataset", "title", "lang", "issuer", "source_type", "caption", "table_label"):
             if key in metadata and metadata.get(key) is not None:
                 payload[key] = metadata.get(key)
         meta_tags = metadata.get("tags")

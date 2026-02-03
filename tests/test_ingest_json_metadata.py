@@ -66,6 +66,89 @@ def test_payload_includes_table_label():
     assert payload["payload_core"]["table_label"] == "Table 4"
 
 
+def test_payload_promotes_caption_from_metadata():
+    artifact = {
+        "id": "c1",
+        "source_file": "bak/temp_uploads/woa23documentation.pdf",
+        "artifact_type": "text_chunk",
+        "links": [],
+        "tags": [],
+        "text": "Table card summary",
+        "content_type": "table_card",
+        "metadata": {
+            "doc_type": "table_card",
+            "caption": "Table 4. Depth ranges",
+            "table_label": "Table 4",
+        },
+    }
+    payload = ingest_json._payload_from_artifact(artifact, "AI")
+    assert payload.get("caption") == "Table 4. Depth ranges"
+    assert payload.get("table_label") == "Table 4"
+
+
+def test_text_for_table_card_includes_context():
+    artifact = {
+        "id": "tc1",
+        "source_file": "bak/temp_uploads/woa23documentation.pdf",
+        "artifact_type": "text_chunk",
+        "content_type": "table_card",
+        "text": "Summary (EN): Depth ranges for oceanographic variables.",
+        "metadata": {
+            "doc_type": "table_card",
+            "doc_title": "World Ocean Atlas 2023 Documentation",
+            "dataset_name": "WOA23",
+            "table_label": "Table 4",
+            "caption": "Table 4. Depth ranges",
+        },
+    }
+    text = ingest_json.text_for_artifact(artifact)
+    assert "World Ocean Atlas 2023 Documentation" in text
+    assert "WOA23" in text
+    assert "Table 4. Depth ranges" in text
+    assert "Depth ranges for oceanographic variables" in text
+
+
+def test_text_for_table_catalog_includes_context():
+    artifact = {
+        "id": "tcatalog",
+        "source_file": "bak/temp_uploads/woa23documentation.pdf",
+        "artifact_type": "text_chunk",
+        "content_type": "table_catalog",
+        "text": "Table Catalog\nTable 4 | Table 4. Depth ranges",
+        "metadata": {
+            "doc_type": "table_catalog",
+            "doc_title": "World Ocean Atlas 2023 Documentation",
+            "dataset_name": "WOA23",
+        },
+    }
+    text = ingest_json.text_for_artifact(artifact)
+    assert "World Ocean Atlas 2023 Documentation" in text
+    assert "WOA23" in text
+    assert "Table Catalog" in text
+
+
+def test_text_for_table_includes_context():
+    artifact = {
+        "id": "t2",
+        "source_file": "bak/temp_uploads/woa23documentation.pdf",
+        "artifact_type": "table",
+        "caption": "Table 4. Depth ranges",
+        "table_label": "Table 4",
+        "markdown_content": "| A | B |",
+        "usage_guide": "This table lists oceanographic variables and depth ranges.",
+        "metadata": {
+            "doc_title": "World Ocean Atlas 2023 Documentation",
+            "dataset_name": "WOA23",
+        },
+    }
+    text = ingest_json.text_for_artifact(artifact)
+    assert "Table 4. Depth ranges" in text
+    assert "| A | B |" in text
+    assert "oceanographic variables" in text
+    assert "World Ocean Atlas 2023 Documentation" in text
+    assert "WOA23" in text
+
+
 def test_text_for_artifact_includes_image_metadata():
     artifact = {
         "id": "img1",

@@ -1111,7 +1111,7 @@ def _contains_code_request(query: str) -> bool:
     return bool(CODE_REGEX.search(lowered))
 
 
-def _maybe_infer_plot_request(query: str, today: date) -> Dict[str, Any] | None:
+def _maybe_infer_plot_request(query: str, today: str) -> Dict[str, Any] | None:
     """
     Detect direct plot requests (e.g., '直接出圖', 'create plot') and synthesize
     a minimal plan.plot_request payload for /mhw map.
@@ -1134,7 +1134,7 @@ def _maybe_infer_plot_request(query: str, today: date) -> Dict[str, Any] | None:
         one = _normalize_date_string(query)
         if one:
             dates.append(one)
-    start = dates[0] if dates else today.isoformat()
+    start = dates[0] if dates else today
     end = dates[1] if len(dates) > 1 else start
     bbox_vals = _extract_bbox_from_query(query)
     if not bbox_vals:

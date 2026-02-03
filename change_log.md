@@ -84,3 +84,6 @@
     - Added OnePass collection switching via `ODB_ONEPASS_SOURCE` and optional link expansion for Omnipipe graph links.
     - Promoted Omnipipe metadata into Qdrant payloads, improved table/image retrieval, and added diagnostics/tests.
     - Hardened MCP reconnect and viewer bridge stability; refined citation labels for user-facing sources.
+#### v0.4.0 UV migration + Omnipipe integration refinements
+    - Switched project workflow to `uv` (env sync/run for CLI/server) to align with new dev platform.
+    - Improved Omnipipe ingestion handling for table card/catalog context and graph link expansion diagnostics.

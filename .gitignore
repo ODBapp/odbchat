@@ -11,6 +11,8 @@ data
 **/*.cert
 .vscode
 **/*.lock
+!uv.lock
+!**/uv.lock
 **/*.save
 **/*.bak
 **/*.swp
@@ -30,6 +32,7 @@ data
 **/cache
 **/ocpu-rcache
 **/__pycache__
+**/__init__.py
 **/dist
 **/dist_*
 .Rproj.user

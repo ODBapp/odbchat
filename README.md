@@ -10,6 +10,12 @@ knowledge_base/
 
 ## Quickstart (Qdrant + Omnipipe JSON)
 
+0) Sync environment (uv):
+
+```bash
+uv sync --all-extras
+```
+
 1) Run Qdrant (test port 6334 to avoid collisions):
 
 ```bash
@@ -19,7 +25,7 @@ docker run -d --rm --name qdrant_test -p 6334:6333 -v /tmp/qdrant_storage:/qdran
 2) Ingest Omnipipe JSON artifacts:
 
 ```bash
-python ingest/ingest_json.py --root /path/to/json_dir --mode overwrite
+uv run python ingest/ingest_json.py --root /path/to/json_dir --mode overwrite
 ```
 
 Supported arguments:
@@ -57,13 +63,20 @@ LLM env vars (llama-cpp):
 4) Run odbchat mcp-server:
 
 ```bash
-python -m server.odbchat_mcp_server
+uv run python -m server.odbchat_mcp_server
 ```
 
 5) Run odbchat client:
 
 ```bash
-python -m cli.odbchat_cli
+uv run python -m cli.odbchat_cli
+```
+
+### Model setup helpers
+
+```bash
+uv run python sh/setup_env.py
+uv run python sh/download_models.py --all
 ```
 
 ### One-pass retrieval env vars
