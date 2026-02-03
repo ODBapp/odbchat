@@ -233,6 +233,7 @@ def _score_bonus_from_payload(payload: Dict[str, Any], query: str) -> float:
     return 0.15 * overlap
 
 
+
 def _lexical_filter_hits(query: str, hits: Sequence["Hit"]) -> List["Hit"]:
     strong_tokens = set(re.findall(r"[a-z0-9_]{2,}", query.lower()))
     tokens = strong_tokens or _tokenize_for_overlap(query)
@@ -663,6 +664,12 @@ def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: in
     allowed = {"references", "related_to", "parent"}
     seen_artifacts: set[str] = set()
     expanded: List[Hit] = []
+    missing_collection = 0
+    missing_links = 0
+    total_links = 0
+    miss_artifact_id = 0
+    miss_doc_id = 0
+    miss_samples: List[Tuple[str, str]] = []
 
     for hit in hits:
         payload = getattr(hit, "payload", {}) or {}
@@ -677,7 +684,12 @@ def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: in
         links = payload.get("links") or []
         collection = payload.get("collection")
         if not collection or not isinstance(links, list):
+            if not collection:
+                missing_collection += 1
+            if not isinstance(links, list) or not links:
+                missing_links += 1
             continue
+        total_links += len(links)
         for link in links:
             if len(expanded) >= limit:
                 break
@@ -690,8 +702,7 @@ def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: in
             if not target_id:
                 continue
             target_id = str(target_id)
-            if target_id in seen_artifacts:
-                continue
+            points = []
             try:
                 points, _ = client.scroll(
                     collection_name=collection,
@@ -701,7 +712,24 @@ def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: in
                     with_vectors=False,
                 )
             except Exception:  # pragma: no cover
-                continue
+                points = []
+            if not points:
+                miss_artifact_id += 1
+                try:
+                    points, _ = client.scroll(
+                        collection_name=collection,
+                        scroll_filter=Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=target_id))]),
+                        limit=1,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
+                except Exception:  # pragma: no cover
+                    points = []
+                if not points:
+                    miss_doc_id += 1
+                    if len(miss_samples) < 3:
+                        miss_samples.append((collection, target_id))
+                    continue
             if not points:
                 continue
             point = points[0]
@@ -721,7 +749,7 @@ def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: in
                     confidence = float(metadata.get("confidence", 1.0))
                 except Exception:
                     confidence = 1.0
-            score = base_score * confidence
+            score = base_score * confidence + 0.001  # slight boost so expanded hits surface in top-k
             expanded.append(
                 Hit(
                     id=str(getattr(point, "id", payload2.get("doc_id") or uuid.uuid4())),
@@ -735,6 +763,17 @@ def expand_hits_via_links(hits: Sequence["Hit"], client: QdrantClient, limit: in
                 )
             )
             seen_artifacts.add(target_id)
+    if DEBUG_MODE:
+        logger.info(
+            "[onepass] link_expansion_links=%d missing_collection=%d missing_links=%d miss_artifact_id=%d miss_doc_id=%d",
+            total_links,
+            missing_collection,
+            missing_links,
+            miss_artifact_id,
+            miss_doc_id,
+        )
+        if miss_samples:
+            logger.info("[onepass] link_expansion_misses=%s", miss_samples)
     return expanded
 
 # ---- Hit helpers: keep Hit objects ----
@@ -770,7 +809,19 @@ def rerank_diversify_hits(hits: List[Hit], k: int = 6) -> List[Hit]:
 
     groups: dict[tuple[str, str], Hit] = {}
     for h in rest:
-        key = (getattr(h, "doc_type", "") or "", getattr(h, "source_file", "") or "")
+        doc_type = getattr(h, "doc_type", "") or ""
+        source_file = getattr(h, "source_file", "") or ""
+        payload = getattr(h, "payload", {}) or {}
+        if doc_type in {"table", "table_card"}:
+            table_key = (
+                payload.get("table_label")
+                or payload.get("caption")
+                or payload.get("title")
+                or getattr(h, "title", "")
+            )
+            key = (doc_type, source_file, str(table_key))
+        else:
+            key = (doc_type, source_file)
         if key not in groups:
             groups[key] = h
     picked.extend(groups.values())
@@ -1474,7 +1525,10 @@ def search_qdrant(query: str, k: int = 6, collections: Optional[List[str]] = Non
         link_ms = (time.perf_counter() - link_start) * 1000.0
         if expanded:
             all_hits.extend(expanded)
-        logger.debug("[onepass] link_expansion_ms=%.2f expanded=%d", link_ms, len(expanded or []))
+        if DEBUG_MODE:
+            logger.info("[onepass] link_expansion_ms=%.2f expanded=%d", link_ms, len(expanded or []))
+        else:
+            logger.debug("[onepass] link_expansion_ms=%.2f expanded=%d", link_ms, len(expanded or []))
 
     # --- Dedupe (by doc_id or (title, source_file)) ---
     all_hits.sort(key=lambda h: h.score, reverse=True)

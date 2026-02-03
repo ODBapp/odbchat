@@ -85,3 +85,66 @@ def test_onepass_table_query_returns_table4_citation(monkeypatch):
     result = run_onepass(query, k=2, debug=False)
     assert result.citations
     assert any("Table 4" in citation.title for citation in result.citations)
+
+
+def test_expand_hits_via_links_falls_back_to_doc_id():
+    from server.rag.onepass_core import expand_hits_via_links
+    class _FakeClient:
+        def __init__(self):
+            self.calls = []
+        def scroll(self, collection_name, scroll_filter, limit, with_payload, with_vectors):
+            self.calls.append((collection_name, scroll_filter))
+            # Simulate artifact_id miss, doc_id hit
+            key = scroll_filter.must[0].key
+            val = scroll_filter.must[0].match.value
+            if key == "artifact_id":
+                return ([], None)
+            if key == "doc_id" and val == "target-1":
+                return ([type("P", (), {"payload": {"doc_id": "target-1", "doc_type": "table", "source_file": "f", "title": "T", "links": []}})()], None)
+            return ([], None)
+
+    hit = Hit(
+        id="h1",
+        score=1.0,
+        title="t",
+        doc_type="table_card",
+        source_file="f",
+        chunk_id=0,
+        text="",
+        payload={
+            "collection": "AI",
+            "artifact_id": "source-1",
+            "links": [{"target_id": "target-1", "link_type": "references"}],
+        },
+    )
+    expanded = expand_hits_via_links([hit], _FakeClient(), limit=1)
+    assert expanded
+
+
+def test_rerank_diversify_allows_multiple_tables_same_file():
+    from server.rag.onepass_core import rerank_diversify_hits
+
+    table1 = Hit(
+        id="t1",
+        score=1.0,
+        title="Table 1",
+        doc_type="table",
+        source_file="woa23documentation.pdf",
+        chunk_id=0,
+        text="",
+        payload={"table_label": "Table 1", "caption": "Table 1"},
+    )
+    table4 = Hit(
+        id="t4",
+        score=0.9,
+        title="Table 4",
+        doc_type="table",
+        source_file="woa23documentation.pdf",
+        chunk_id=0,
+        text="",
+        payload={"table_label": "Table 4", "caption": "Table 4"},
+    )
+    out = rerank_diversify_hits([table1, table4], k=6)
+    labels = {h.payload.get("table_label") for h in out}
+    assert "Table 1" in labels
+    assert "Table 4" in labels

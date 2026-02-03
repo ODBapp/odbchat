@@ -27,6 +27,12 @@ sudo apt-get install -y gcc-9 g++-9
 cmake -B build -G Ninja -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 -DCUDAToolkit_ROOT=/usr/local/cuda-11.8 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8/bin -DCMAKE_CUDA_COMPILER=/usr/local/cuda-11.8/bin/nvcc -DCMAKE_C_COMPILER=/usr/bin/gcc-9 -DCMAKE_CXX_COMPILER=/usr/bin/g++-9 -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS
 cmake --build build -j
 
+# Apple Silicon 沒有cuda, 改用METAL
+# 使用 Ninja 和 Metal 編譯
+cmake -B build -G Ninja -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+
 # execution for /home/odbadmin/backup/src/llama.cpp/build/bin/llama-server
 # we had put this export PATH="$HOME/.local/bin:$PATH" in .bashrc
 sudo ln -s /home/odbadmin/backup/src/llama.cpp/build/bin/llama-server ~/.local/bin

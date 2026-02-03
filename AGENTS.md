@@ -8,11 +8,11 @@
 - `change_log.md`: Update with notable changes in PRs.
 
 ## Build, Test, and Development Commands
-- Create env: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`.
-- Run server: `python odbchat_mcp_server.py` (HTTP transport on `127.0.0.1:8045/mcp`; requires `ollama serve`).
-- Run CLI (interactive): `python odbchat_cli.py`.
-- One-off query: `python odbchat_cli.py -q "status" --status` or list models: `python odbchat_cli.py --list-models`.
-- Discover tools: `python odbchat_cli.py --list-tools`.
+- Create/sync env: `uv sync --all-extras`.
+- Run server: `uv run python -m server.odbchat_mcp_server` (HTTP transport on `127.0.0.1:8045/mcp`; requires `ollama serve`).
+- Run CLI (interactive): `uv run python -m cli.odbchat_cli`.
+- One-off query: `uv run python -m cli.odbchat_cli -q "status" --status` or list models: `uv run python -m cli.odbchat_cli --list-models`.
+- Discover tools: `uv run python -m cli.odbchat_cli --list-tools`.
 
 ## Coding Style & Naming Conventions
 - Python, PEP 8, 4-space indentation, keep type hints and docstrings (triple-quoted) as in current files.
